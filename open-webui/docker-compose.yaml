@@ -1,0 +1,181 @@
+services:
+  rag-proxy:
+    container_name: rag-proxy
+    build:
+      context: /opt/ai-stack
+      dockerfile: Dockerfile
+    ports: ["8080:8080"]
+    networks: [opt_ai-net]
+    restart: unless-stopped
+
+    env_file: /opt/ai-stack/.env
+
+    environment:
+      MCP_URL: "${MCP_URL:-http://mcp-confluence:9000/sse?version=2025-06-18}"
+      MCP_PROTOCOL_VERSION: "${MCP_PROTOCOL_VERSION:-2025-06-18}"
+      DISABLE_INTERNAL_MCP: "${DISABLE_INTERNAL_MCP:-0}"
+
+      INDEX_DIR: "${INDEX_DIR:-faiss_index}"
+      UPLOAD_DIR: "${UPLOAD_DIR:-uploads}"
+
+      OPENAI_MODEL: "${OPENAI_MODEL}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL}"
+      EMBEDDING_DEVICE: "${EMBEDDING_DEVICE}"
+      E5_USE_PREFIX: "${E5_USE_PREFIX:-0}"
+
+      ENABLE_RERANKER: "${ENABLE_RERANKER}"
+      RERANKER_MODEL: "${RERANKER_MODEL}"
+      RERANKER_TOP_N: "${RERANKER_TOP_N:-5}"
+
+      ENABLE_SPARSE: "${ENABLE_SPARSE}"
+      SPARSE_LIMIT: "${SPARSE_LIMIT:-300}"
+
+      CHUNK_SIZE: "${CHUNK_SIZE:-800}"
+      CHUNK_OVERLAP: "${CHUNK_OVERLAP:-120}"
+
+      RETRIEVER_K: "${RETRIEVER_K:-10}"
+      RETRIEVER_FETCH_K: "${RETRIEVER_FETCH_K:-128}"
+
+      SEARCH_TYPE: "${SEARCH_TYPE:-mmr}"
+      PAGE_FILTER_MODE: "${PAGE_FILTER_MODE:-hard}"
+      PAGE_HINT_BONUS: "${PAGE_HINT_BONUS:-0.7}"
+      TITLE_BONUS: "${TITLE_BONUS:-0.35}"
+
+      STICKY_AFTER_MCP: "${STICKY_AFTER_MCP:-true}"
+
+      SPACE_FILTER_MODE: "${SPACE_FILTER_MODE:-soft}"
+      SPACE_HINT_BONUS: "${SPACE_HINT_BONUS:-0.25}"
+
+      MCP_TIMEOUT: "${MCP_TIMEOUT:-5}"
+      MCP_MAX_TASKS: "${MCP_MAX_TASKS:-2}"
+      MAX_FALLBACK_SECS: "${MAX_FALLBACK_SECS:-20}"
+
+      HF_HOME: /cache/hf
+      TRANSFORMERS_CACHE: /cache/hf/transformers
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+      STICKY_SECS: "${STICKY_SECS:-60}"
+      STICKY_STRICT: "${STICKY_STRICT:-0}"
+      LOCAL_FIRST: "${LOCAL_FIRST:-1}"
+      LOCAL_BONUS: "${LOCAL_BONUS:-0.25}"
+      CONFLUENCE_SPACE: "${CONFLUENCE_SPACE:-SMST,NTRP}"
+
+    volumes:
+      - hf-cache:/cache/hf
+      - /opt/ai-stack/storage/uploads:/app/uploads
+      - /opt/ai-stack/storage/index:/app/faiss_index
+
+  rag-router:
+    container_name: rag-router
+    build:
+      context: /opt/ai-stack/rag-router
+      dockerfile: Dockerfile
+    image: rag-router:latest
+    ports: ["8088:8000"]
+    environment:
+      RAG_PROXY_URL: "http://rag-proxy:8080"
+      OPENAI_URL: "${OPENAI_BASE_URL}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_MODEL: "${OPENAI_MODEL}"
+      ROUTER_MODEL_ID: "qwen3-30b-a3b-fp8-router"
+
+      MAX_CTX_CHARS: "8000"
+      RETRIEVE_K: "5"
+      ROUTER_MIN_RAG_HITS: "0"
+      ROUTER_TZ: "Asia/Seoul"
+      ROUTER_MAX_TOKENS: "2048"
+      ROUTER_MODEL_LIMIT_TOKENS: "16384"
+      ROUTER_CTX_SAFETY_MARGIN: "512"
+      ROUTER_KEEP_HISTORY: "0"
+      ROUTER_USER_MAX_CHARS: "1200"
+      ROUTER_ANSWER_MODE: "sections"
+      ROUTER_BULLETS_MAX: "15"
+      ROUTER_HEADING: ""
+      ROUTER_SHOW_SOURCES: "1"
+      ROUTER_SOURCES_MAX: "1"
+      ROUTER_MIN_OVERLAP: "0.08"
+      CONFLUENCE_SPACE: "${CONFLUENCE_SPACE:-SMST,NTRP}"
+    depends_on: [rag-proxy]
+    networks: [opt_ai-net]
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    networks: [opt_ai-net]
+
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:0.6.33
+    container_name: open-webui
+    environment:
+      - ENABLE_RAG_PROXY=true
+      - RAG_PROXY_URL=http://rag-proxy:8080
+      - BYPASS_EMBEDDING_AND_RETRIEVAL=true
+      - ENABLE_FORWARD_USER_INFO_HEADERS=true
+      - WEBUI_SECRET_KEY=
+      # - OLLAMA_BASE_URL=http://ollama:11434
+    depends_on:
+      - rag-proxy
+    ports: ["3000:8080"]
+    networks: [opt_ai-net]
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: open-webui
+        target: /app/backend/data
+      # - ./open-webui/backend:/app/backend   # ← 개발용이 아니면 주석 유지 권장
+
+  mcp-confluence:
+    build:
+      context: /opt/mcp-confluence
+    container_name: mcp-confluence
+    env_file:
+      - /opt/mcp-confluence/.env
+    environment:
+      - TRANSPORT=sse
+      - HOST=0.0.0.0
+      - PORT=9000
+      - RAG_PROXY=http://rag-proxy:8080
+      - CONFLUENCE_SPACE=SMST,NTRP
+
+      - ENABLE_SITE_SEARCH=true
+      - SITE_SEARCH_FALLBACK=0
+      - USE_HTML_SEARCH=0
+
+    networks: [opt_ai-net]
+    restart: unless-stopped
+    command: >
+      sh -lc "uvicorn app.main:api --host 0.0.0.0 --port 9000"
+
+  webui-to-rag-bridge:
+    image: python:3.11-slim
+    container_name: webui-to-rag-bridge
+    depends_on: [rag-proxy, open-webui]
+    restart: unless-stopped
+    networks: [opt_ai-net]
+    environment:
+      RAG_PROXY: "http://rag-proxy:8080"
+      WATCH_DIR: "/data/uploads"
+      EXT_FILTER: "pdf,pptx,xlsx,txt,csv,md"
+      POLL_SEC: "2"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - open-webui:/data:ro
+      - /opt/ai-stack/bridge/bridge.py:/bridge.py:ro
+    command: sh -lc "pip install --no-cache-dir requests && python /bridge.py"
+      
+volumes:
+  ollama: {}
+  open-webui: {}
+  hf-cache: {}
+
+networks:
+  opt_ai-net:
+    external: true
+    name: opt_ai-net
