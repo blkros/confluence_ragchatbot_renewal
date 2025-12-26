@@ -1,0 +1,22 @@
+.env
+**/.env
+
+# data / caches
+**/uploads/
+**/faiss_index/
+**/storage/
+**/cache/
+**/.cache/
+**/hf/
+
+# python
+**/__pycache__/
+*.pyc
+**/.venv/
+
+# node
+**/node_modules/
+
+# os / ide
+.DS_Store
+.vscode/
