@@ -610,6 +610,11 @@ app.state.redis = None
 app.state.WEBUI_NAME = WEBUI_NAME
 app.state.LICENSE_METADATA = None
 
+app.state.config.ENABLE_RAG_PROXY = ENABLE_RAG_PROXY
+app.state.config.RAG_PROXY_URL = RAG_PROXY_URL
+app.state.config.RAG_PROXY_TIMEOUT = RAG_PROXY_TIMEOUT
+app.state.config.RAG_PROXY_API_KEY = RAG_PROXY_API_KEY
+
 if app.state.config.ENABLE_RAG_PROXY and app.state.config.RAG_PROXY_URL:
     app.include_router(
         rag_proxy_router.router,
@@ -804,10 +809,6 @@ app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL = BYPASS_EMBEDDING_AND_RETRIEVAL
 app.state.config.ENABLE_RAG_HYBRID_SEARCH = ENABLE_RAG_HYBRID_SEARCH
 app.state.config.ENABLE_WEB_LOADER_SSL_VERIFICATION = ENABLE_WEB_LOADER_SSL_VERIFICATION
 
-app.state.config.ENABLE_RAG_PROXY = ENABLE_RAG_PROXY
-app.state.config.RAG_PROXY_URL = RAG_PROXY_URL
-app.state.config.RAG_PROXY_TIMEOUT = RAG_PROXY_TIMEOUT
-app.state.config.RAG_PROXY_API_KEY = RAG_PROXY_API_KEY
 
 
 app.state.config.CONTENT_EXTRACTION_ENGINE = CONTENT_EXTRACTION_ENGINE
