@@ -555,6 +555,7 @@ def build_system_with_context(ctx_text: str, mode: str) -> str:
         "- 컨텍스트에 있는 정보만 사용하고 추측 금지.\n"
         "- 고유명사/수치는 가능한 그대로 인용하되 과도한 반복은 피한다.\n"
         "- 내부 추론(<think> 등) 출력 금지, 최종 답만 출력한다.\n"
+        "- <think> 태그를 사용하더라도 답변은 반드시 태그 밖에 출력한다.\n"
         + heading_hint + style + numeric_rules +
         "- 컨텍스트가 완전히 비었거나 무관하면 정확히 `인덱스에 근거 없음`만 출력한다.\n"
         "- 민감정보(비밀번호/토큰/IP 마지막 옥텟)는 마스킹한다.\n"
@@ -672,7 +673,7 @@ async def chat(req: ChatReq):
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
     clean_user_msg = normalize_query_router(orig_user_msg)
     file_hint = bool(_FILE_HINT_RE.search(orig_user_msg))
-    variants = generate_query_variants(orig_user_msg)
+    variants = generate_query_variants(clean_user_msg)
     limited_msgs = await _limited_messages(req.messages)
     limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
     _dbg(f"req: user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
@@ -791,6 +792,15 @@ async def chat(req: ChatReq):
     qa_ok = bool(ctx_text.strip()) and (
         file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text)
     )
+
+def build_final_only_prompt(ctx_text: str) -> str:
+    return (
+        "You must answer only with the final answer. Do not include <think> or reasoning.\n"
+        "If you cannot answer from the context, reply exactly: 인덱스에 근거 없음\n"
+        "[컨텍스트 시작]\n"
+        f"{ctx_text}\n"
+        "[컨텍스트 끝]\n"
+    )
     if qa_ok and (len(ctx_text) < ROUTER_QA_MIN_CTX_LEN) and not file_hint:
         _dbg(f"qa_reject_short: ctx_len={len(ctx_text)} min={ROUTER_QA_MIN_CTX_LEN}")
         qa_ok = False
@@ -827,7 +837,7 @@ async def chat(req: ChatReq):
                     _dbg(f"qa_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
                 if not raw:
                     short_ctx = ctx_for_prompt[:2000]
-                    payload["messages"] = [{"role":"system","content":build_system_with_context(short_ctx, mode)}] + limited_msgs
+                    payload["messages"] = [{"role":"system","content":build_final_only_prompt(short_ctx)}] + [{"role":"user","content": clean_user_msg}]
                     r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
                     rj2 = r2.json()
                     raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
@@ -835,7 +845,10 @@ async def chat(req: ChatReq):
                 print(f"[router] OPENAI chat error: {e}")
                 raw = ""
 
-        content = sanitize(clean_llm_output(raw)) or "인덱스에 근거 없음"
+        cleaned = clean_llm_output(raw)
+        if ROUTER_DEBUG and not cleaned and raw:
+            _dbg(f"qa_clean_empty: raw_prefix={repr(raw[:200])}")
+        content = sanitize(cleaned) or "인덱스에 근거 없음"
         _dbg(f"qa_answer: raw_len={len(raw)} content_len={len(content)}")
 
         full_ctx_for_check = sanitize(ctx_text)
@@ -1033,19 +1046,22 @@ async def chat(req: ChatReq):
             r = await client.post(f"{OPENAI}/chat/completions", json=payload)
             rj = r.json()
             raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-            if ROUTER_DEBUG and not raw:
-                _dbg(f"query_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
-            if not raw:
-                short_ctx = ctx_for_prompt[:2000]
-                payload["messages"] = [{"role":"system","content":build_system_with_context(short_ctx, mode)}] + limited_msgs
-                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
-                rj2 = r2.json()
-                raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                if ROUTER_DEBUG and not raw:
+                    _dbg(f"query_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
+                if not raw:
+                    short_ctx = ctx_for_prompt[:2000]
+                    payload["messages"] = [{"role":"system","content":build_final_only_prompt(short_ctx)}] + [{"role":"user","content": clean_user_msg}]
+                    r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                    rj2 = r2.json()
+                    raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
         except (httpx.RequestError, ValueError) as e:
             print(f"[router] OPENAI chat error: {e}")
             raw = ""
 
-    content = sanitize(clean_llm_output(raw)) or "인덱스에 근거 없음"
+    cleaned = clean_llm_output(raw)
+    if ROUTER_DEBUG and not cleaned and raw:
+        _dbg(f"query_clean_empty: raw_prefix={repr(raw[:200])}")
+    content = sanitize(cleaned) or "인덱스에 근거 없음"
     if not file_hint and best_ctx and _LOCAL_SRC_RE.search(best_ctx):
         file_hint = True
 
