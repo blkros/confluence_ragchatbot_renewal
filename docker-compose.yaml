@@ -36,6 +36,7 @@ services:
       OPENAI_URL: "${OPENAI_BASE_URL}"
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
       OPENAI_MODEL: "${OPENAI_MODEL}"
+      ROUTER_DEBUG: "1"
       ROUTER_MODEL_ID: "${ROUTER_MODEL_ID:-Qwen3-30B-A3B-FP8-router}"
       MAX_CTX_CHARS: "8000"
       RETRIEVE_K: "5"
