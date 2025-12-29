@@ -124,6 +124,14 @@ def _build_system_prefix(mode: str) -> str:
 # --- 상단 환경변수/유틸 근처에 추가 ---
 HISTORY_KEEP = int(os.getenv("ROUTER_KEEP_HISTORY", "0"))  # 0이면 마지막 user만
 USER_MAX_CHARS = int(os.getenv("ROUTER_USER_MAX_CHARS", "2000"))
+ROUTER_HISTORY_MODE = os.getenv("ROUTER_HISTORY_MODE", "hybrid").strip().lower()
+ROUTER_HISTORY_SHORT_CHARS = int(os.getenv("ROUTER_HISTORY_SHORT_CHARS", "80"))
+ROUTER_HISTORY_SIM_THRESH = float(os.getenv("ROUTER_HISTORY_SIM_THRESH", "0.2"))
+ROUTER_HISTORY_AMBIG_LOW = float(os.getenv("ROUTER_HISTORY_AMBIG_LOW", "0.08"))
+ROUTER_HISTORY_USE_LLM = (os.getenv("ROUTER_HISTORY_USE_LLM", "1").lower() not in ("0","false","no"))
+
+_FOLLOWUP_RE = re.compile(r"(?:그거|그것|이거|이것|위에|앞에|방금|이전|앞서|그럼|그리고|추가로|계속|이어|같은|또)", re.I)
+_NEW_TOPIC_RE = re.compile(r"(?:다른\\s*질문|새\\s*질문|새로운\\s*질문|주제\\s*변경|topic\\s*change|topic\\s*switch|별개|전혀\\s*다른|다음\\s*질문)", re.I)
 
 def _trim_user_text(s: str, limit: int) -> str:
     s = s or ""
@@ -132,7 +140,7 @@ def _trim_user_text(s: str, limit: int) -> str:
     half = max(600, limit // 2)
     return s[:half] + "\n...\n" + s[-half:]
 
-def _limited_messages(req_msgs: List[Msg]) -> List[dict]:
+def _limited_messages_static(req_msgs: List[Msg]) -> List[dict]:
     # 마지막 user 메세지
     last_user = next((m for m in reversed(req_msgs) if m.role == "user"), None)
     if not last_user:
@@ -146,6 +154,80 @@ def _limited_messages(req_msgs: List[Msg]) -> List[dict]:
         c = sanitize(strip_reasoning(m.content or ""))[:500]
         hist.append({"role": m.role, "content": c})
     return hist + [{"role": "user", "content": trimmed}]
+
+def _token_overlap_ratio(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    ta = [t for t in _tokens(a) if t not in _STOPWORDS]
+    if not ta:
+        return 0.0
+    tb = set(t for t in _tokens(b) if t not in _STOPWORDS)
+    common = sum(1 for t in ta if t in tb)
+    return common / len(ta)
+
+def _heuristic_history_decision(last_user: str, prev_user: str) -> Optional[bool]:
+    if _NEW_TOPIC_RE.search(last_user):
+        return False
+    if _FOLLOWUP_RE.search(last_user):
+        return True
+    if len(last_user) <= ROUTER_HISTORY_SHORT_CHARS:
+        return True
+    overlap = _token_overlap_ratio(last_user, prev_user)
+    if overlap >= ROUTER_HISTORY_SIM_THRESH:
+        return True
+    if overlap <= ROUTER_HISTORY_AMBIG_LOW:
+        return False
+    return None
+
+async def _llm_history_decision(last_user: str, prev_user: str) -> bool:
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": "Decide if the current user message continues the same topic as the previous user message. Reply only YES or NO."},
+            {"role": "user", "content": f"Previous user message:\\n{prev_user}\\n\\nCurrent user message:\\n{last_user}\\n\\nAnswer YES or NO only."},
+        ],
+        "stream": False,
+        "temperature": 0,
+        "max_tokens": 3,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            j = r.json()
+            raw = j.get("choices", [{}])[0].get("message", {}).get("content", "")
+            ans = strip_reasoning(raw).strip().upper()
+            return ans.startswith("YES")
+    except (httpx.RequestError, ValueError):
+        return False
+
+async def _limited_messages(req_msgs: List[Msg]) -> List[dict]:
+    # 마지막 user 메세지
+    last_user = next((m for m in reversed(req_msgs) if m.role == "user"), None)
+    if not last_user:
+        return [{"role": "user", "content": ""}]
+    trimmed = _trim_user_text(sanitize(strip_reasoning(last_user.content)), USER_MAX_CHARS)
+
+    if HISTORY_KEEP <= 0 or ROUTER_HISTORY_MODE in ("off", "none", "false", "0"):
+        return [{"role": "user", "content": trimmed}]
+    if ROUTER_HISTORY_MODE in ("static", "fixed"):
+        return _limited_messages_static(req_msgs)
+
+    prev_user = None
+    for m in reversed(req_msgs[:-1]):
+        if m.role == "user":
+            prev_user = m
+            break
+    if not prev_user:
+        return [{"role": "user", "content": trimmed}]
+
+    prev_trimmed = _trim_user_text(sanitize(strip_reasoning(prev_user.content)), USER_MAX_CHARS)
+    decision = _heuristic_history_decision(trimmed, prev_trimmed)
+    if decision is None and ROUTER_HISTORY_USE_LLM:
+        decision = await _llm_history_decision(trimmed, prev_trimmed)
+
+    if not decision:
+        return [{"role": "user", "content": trimmed}]
+    return _limited_messages_static(req_msgs)
 
 def _host_of(u: str) -> str:
     m = re.match(r"https?://([^/]+)", str(u or ""))
@@ -551,12 +633,13 @@ async def chat(req: ChatReq):
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
     file_hint = bool(_FILE_HINT_RE.search(orig_user_msg))
     variants = generate_query_variants(orig_user_msg)
+    limited_msgs = await _limited_messages(req.messages)
 
     # 메타 태스크면 RAG 건너뛰고 그대로 모델로 전달 (JSON 형식 보존)
     if _is_webui_task(orig_user_msg):
         payload = {
             "model": OPENAI_MODEL,
-            "messages": _limited_messages(req.messages),
+            "messages": limited_msgs,
             "stream": False,
             "temperature": 0,
             "max_tokens": req.max_tokens or ROUTER_MAX_TOKENS,
@@ -669,7 +752,6 @@ async def chat(req: ChatReq):
         mode = pick_answer_mode(orig_user_msg, ctx_for_prompt)
 
         sys_prefix = _build_system_prefix(mode)
-        limited_msgs = _limited_messages(req.messages)
         user_for_budget = next((m["content"] for m in reversed(limited_msgs) if m["role"]=="user"), "")
         ctx_for_prompt = _fit_ctx_to_budget(sys_prefix, user_for_budget, ctx_for_prompt)
 
@@ -790,7 +872,6 @@ async def chat(req: ChatReq):
             )
         }
         max_tokens = req.max_tokens or OUTPUT_TOKENS
-        limited_msgs = _limited_messages(req.messages)
         payload = {
             "model": OPENAI_MODEL,
             "messages": [sysmsg] + limited_msgs,
@@ -832,7 +913,6 @@ async def chat(req: ChatReq):
     mode = pick_answer_mode(orig_user_msg, full_ctx_for_check)
 
     # 예산 계산에 필요한 메시지/프리픽스 준비
-    limited_msgs = _limited_messages(req.messages)
     sys_prefix = _build_system_prefix(mode)
     user_for_budget = next((m["content"] for m in reversed(limited_msgs) if m["role"] == "user"), "")
 
