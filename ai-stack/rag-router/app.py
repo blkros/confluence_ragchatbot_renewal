@@ -16,6 +16,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "qwen3-30b-a3b-fp8")
 ROUTER_MODEL_ID = os.getenv("ROUTER_MODEL_ID", "qwen3-30b-a3b-fp8-router")
 TZ = os.getenv("ROUTER_TZ", "Asia/Seoul")
 _NUM_ONLY_LINE = re.compile(r'(?m)^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
+_FILE_HINT_RE = re.compile(r"(?:file|document|pdf|첨부|파일|문서|자료)", re.I)
 
 ROUTER_STRICT_RAG = (os.getenv("ROUTER_STRICT_RAG", "1").lower() not in ("0","false","no"))
 ANSWER_MIN_OVERLAP = float(os.getenv("ROUTER_ANSWER_MIN_OVERLAP", "0.12"))
@@ -529,6 +530,7 @@ def models():
 @app.post("/v1/chat/completions")
 async def chat(req: ChatReq):
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
+    file_hint = bool(_FILE_HINT_RE.search(orig_user_msg))
     variants = generate_query_variants(orig_user_msg)
 
     # 메타 태스크면 RAG 건너뛰고 그대로 모델로 전달 (JSON 형식 보존)
@@ -615,7 +617,7 @@ async def chat(req: ChatReq):
             ctx_text = "\n\n".join(extract_texts(items))[:MAX_CTX_CHARS]
             ctx_text = mark_lonely_numbers_as_total(ctx_text)
 
-            if not (ctx_text.strip() and (is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text))):
+            if not (ctx_text.strip() and (file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text))):
                 continue
 
             qa_json  = best
@@ -628,7 +630,9 @@ async def chat(req: ChatReq):
         ctx_text = "\n\n".join(extract_texts(qa_items))[:MAX_CTX_CHARS]
         ctx_text = mark_lonely_numbers_as_total(ctx_text)
     # [CHANGE] 길이(80자) 허용 삭제 → 관련도/컨텍스트 품질만
-    qa_ok = bool(ctx_text.strip()) and (is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text))
+    qa_ok = bool(ctx_text.strip()) and (
+        file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text)
+    )
     if not qa_ok:
         qa_json = None
 
@@ -724,7 +728,7 @@ async def chat(req: ChatReq):
         used_q_for_relevance = used_q_good if best_ctx_good else used_q_any
 
         # 게이트
-        if best_ctx and not (is_good_context_for_qa(best_ctx) or
+        if best_ctx and not (file_hint or is_good_context_for_qa(best_ctx) or
                             is_relevant(used_q_for_relevance or orig_user_msg, best_ctx)):
             best_ctx = ""
             src_urls = []
