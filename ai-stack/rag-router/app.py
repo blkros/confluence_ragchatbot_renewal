@@ -412,6 +412,16 @@ def clean_llm_output(text: str) -> str:
     # 모델이 <think> 안에만 답을 쓰는 경우 대비
     return re.sub(r'(?is)</?think[^>]*>', '', text or "").strip()
 
+def _replace_last_user(messages: list[dict], content: str) -> list[dict]:
+    if not messages:
+        return messages
+    out = list(messages)
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].get("role") == "user":
+            out[i] = {"role": "user", "content": content}
+            break
+    return out
+
 
 def mark_lonely_numbers_as_total(text: str) -> str:
     """
@@ -651,9 +661,11 @@ def models():
 @app.post("/v1/chat/completions")
 async def chat(req: ChatReq):
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
+    clean_user_msg = normalize_query_router(orig_user_msg)
     file_hint = bool(_FILE_HINT_RE.search(orig_user_msg))
     variants = generate_query_variants(orig_user_msg)
     limited_msgs = await _limited_messages(req.messages)
+    limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
     _dbg(f"req: user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
 
     # 메타 태스크면 RAG 건너뛰고 그대로 모델로 전달 (JSON 형식 보존)
@@ -801,6 +813,14 @@ async def chat(req: ChatReq):
                 r = await client.post(f"{OPENAI}/chat/completions", json=payload)
                 rj = r.json()
                 raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                if ROUTER_DEBUG and not raw:
+                    _dbg(f"qa_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
+                if not raw:
+                    short_ctx = ctx_for_prompt[:2000]
+                    payload["messages"] = [{"role":"system","content":build_system_with_context(short_ctx, mode)}] + limited_msgs
+                    r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                    rj2 = r2.json()
+                    raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             except (httpx.RequestError, ValueError) as e:
                 print(f"[router] OPENAI chat error: {e}")
                 raw = ""
@@ -946,6 +966,12 @@ async def chat(req: ChatReq):
                 r = await client.post(f"{OPENAI}/chat/completions", json=payload)
                 rj = r.json()
                 raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                if ROUTER_DEBUG and not raw:
+                    _dbg(f"llm_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
+                if not raw:
+                    r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                    rj2 = r2.json()
+                    raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 content = sanitize(clean_llm_output(raw)) or "죄송해요. 지금은 답을 찾지 못했어요."
             except (httpx.RequestError, ValueError):
                 content = "죄송해요. 지금은 답을 찾지 못했어요."
@@ -997,6 +1023,14 @@ async def chat(req: ChatReq):
             r = await client.post(f"{OPENAI}/chat/completions", json=payload)
             rj = r.json()
             raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+            if ROUTER_DEBUG and not raw:
+                _dbg(f"query_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
+            if not raw:
+                short_ctx = ctx_for_prompt[:2000]
+                payload["messages"] = [{"role":"system","content":build_system_with_context(short_ctx, mode)}] + limited_msgs
+                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                rj2 = r2.json()
+                raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
         except (httpx.RequestError, ValueError) as e:
             print(f"[router] OPENAI chat error: {e}")
             raw = ""
