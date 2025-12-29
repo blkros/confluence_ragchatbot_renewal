@@ -280,6 +280,15 @@ def _dbg(msg: str) -> None:
     if ROUTER_DEBUG:
         print(f"[router] {msg}")
 
+def _clamp_max_tokens(system_prompt: str, messages: list[dict], req_max: Optional[int]) -> int:
+    base = _pick_max_tokens(req_max)
+    input_tokens = _est_tokens(system_prompt)
+    for m in messages or []:
+        input_tokens += _est_tokens(str(m.get("content") or ""))
+    # leave safety margin for system + output
+    remain = max(128, MODEL_LIMIT_TOKENS - input_tokens - SAFETY_MARGIN)
+    return min(base, remain)
+
 def _qa_score(j):
     if not j: return -1
     hits = float(j.get("hits") or 0)
@@ -670,12 +679,13 @@ async def chat(req: ChatReq):
 
     # 메타 태스크면 RAG 건너뛰고 그대로 모델로 전달 (JSON 형식 보존)
     if _is_webui_task(orig_user_msg):
+        max_tokens = _clamp_max_tokens("", limited_msgs, req.max_tokens)
         payload = {
             "model": OPENAI_MODEL,
             "messages": limited_msgs,
             "stream": False,
             "temperature": 0,
-            "max_tokens": _pick_max_tokens(req.max_tokens) or ROUTER_MAX_TOKENS,
+            "max_tokens": max_tokens,
         }
         try:
             async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
@@ -800,7 +810,7 @@ async def chat(req: ChatReq):
         ctx_for_prompt = _fit_ctx_to_budget(sys_prefix, user_for_budget, ctx_for_prompt)
 
         system_prompt = build_system_with_context(ctx_for_prompt, mode)
-        max_tokens = _pick_max_tokens(req.max_tokens)
+        max_tokens = _clamp_max_tokens(system_prompt, limited_msgs, req.max_tokens)
         payload = {
             "model": OPENAI_MODEL,
             "messages": [{"role":"system","content":system_prompt}] + limited_msgs,
@@ -953,7 +963,7 @@ async def chat(req: ChatReq):
                 "‘인덱스에 근거 없음’ 같은 말은 하지 마세요."
             )
         }
-        max_tokens = _pick_max_tokens(req.max_tokens)
+        max_tokens = _clamp_max_tokens(sysmsg["content"], limited_msgs, req.max_tokens)
         payload = {
             "model": OPENAI_MODEL,
             "messages": [sysmsg] + limited_msgs,
@@ -1007,7 +1017,7 @@ async def chat(req: ChatReq):
     # 컨텍스트를 토큰 예산에 맞춰 컷
     ctx_for_prompt = _fit_ctx_to_budget(sys_prefix, user_for_budget, full_ctx_for_check)
     system_prompt = build_system_with_context(ctx_for_prompt, mode)
-    max_tokens = _pick_max_tokens(req.max_tokens)
+    max_tokens = _clamp_max_tokens(system_prompt, limited_msgs, req.max_tokens)
 
     payload = {
         "model": OPENAI_MODEL,
