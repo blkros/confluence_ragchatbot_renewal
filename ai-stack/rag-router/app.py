@@ -427,7 +427,10 @@ def clean_llm_output(text: str) -> str:
         recovered = (m.group(1) or "").strip()
         if recovered:
             return recovered
-    # Fallback: drop <think> tags only.
+    # Fallback: if <think> is unclosed, keep everything after the tag.
+    if re.search(r'(?is)<think\b[^>]*>', text or ""):
+        return re.sub(r'(?is)<think\b[^>]*>', '', text or "").strip()
+    # Last resort: drop <think> tags only.
     return re.sub(r'(?is)</?think[^>]*>', '', text or "").strip()
 
 def build_final_only_prompt(ctx_text: str) -> str:
