@@ -19,6 +19,7 @@ _NUM_ONLY_LINE = re.compile(r'(?m)^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
 _FILE_HINT_RE = re.compile(r"(?:file|document|pdf|첨부|파일|문서|자료)", re.I)
 _LOCAL_SRC_RE = re.compile(r"/uploads/|\\uploads\\", re.I)
 _CONF_HOST_RE = re.compile(r"https?://[^/]*confluence[^/]*", re.I)
+_CONTEXT_CUT_RE = re.compile(r"\s*---\s*\[?context\]?\s*.*$|\s*---\s*\[?컨텍스트\]?\s*.*$", re.I)
 
 ROUTER_STRICT_RAG = (os.getenv("ROUTER_STRICT_RAG", "1").lower() not in ("0","false","no"))
 ANSWER_MIN_OVERLAP = float(os.getenv("ROUTER_ANSWER_MIN_OVERLAP", "0.12"))
@@ -452,6 +453,7 @@ def pick_answer_mode(user_msg: str, ctx_text: str) -> str:
 def normalize_query_router(q: str) -> str:
     if not q: return ""
     s = q.strip()
+    s = _CONTEXT_CUT_RE.sub("", s)
     s = re.sub(r'(?i)\bstfp\b|\bsfttp\b|\bsfpt\b|\bsftp\b', 'SFTP', s)
     s = s.replace("스텝", "SFTP")
     return s
