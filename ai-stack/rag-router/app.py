@@ -666,7 +666,7 @@ async def chat(req: ChatReq):
         content = sanitize(strip_reasoning(raw).strip()) or "인덱스에 근거 없음"
 
         full_ctx_for_check = sanitize(ctx_text)
-        strict = bool(spaces_hint) and ROUTER_STRICT_RAG
+        strict = bool(spaces_hint) and ROUTER_STRICT_RAG and not file_hint
         if strict and not supported_by_context(content, full_ctx_for_check):
             content = "인덱스에 근거 없음"
             qa_urls = []
