@@ -418,7 +418,13 @@ def clean_llm_output(text: str) -> str:
     cleaned = strip_reasoning(text or "").strip()
     if cleaned:
         return cleaned
-    # 모델이 <think> 안에만 답을 쓰는 경우 대비
+    # If the model put the answer inside <think>, recover it.
+    m = re.search(r'(?is)<think\b[^>]*>(.*?)</think>', text or "")
+    if m:
+        recovered = (m.group(1) or "").strip()
+        if recovered:
+            return recovered
+    # Fallback: drop <think> tags only.
     return re.sub(r'(?is)</?think[^>]*>', '', text or "").strip()
 
 def build_final_only_prompt(ctx_text: str) -> str:
