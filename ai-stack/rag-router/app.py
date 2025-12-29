@@ -800,46 +800,49 @@ async def chat(req: ChatReq):
 
         # === QA 경로 ===
         qa_json = None; qa_items = []; qa_urls = []
-        for v in variants:
-            #  QA 호출에도 spaces_hint 전달(기존 기능 유지, 정확도 ↑) 
-            try:
-                p1 = {"q": v, "k": 5, "sticky": False}
-                if spaces_hint:
-                    p1["spaces"] = spaces_hint
-                j1 = (await client.post(f"{RAG}/qa", json=p1)).json()
-            except Exception:
-                j1 = {}
-            try:
-                p2 = {"q": v, "k": 5, "sticky": True}
-                if spaces_hint:
-                    p2["spaces"] = spaces_hint
-                j2 = (await client.post(f"{RAG}/qa", json=p2)).json()
-            except Exception:
-                j2 = {}
+        if file_hint:
+            _dbg("qa_skip_file_hint: true")
+        else:
+            for v in variants:
+                #  QA 호출에도 spaces_hint 전달(기존 기능 유지, 정확도 ↑) 
+                try:
+                    p1 = {"q": v, "k": 5, "sticky": False}
+                    if spaces_hint:
+                        p1["spaces"] = spaces_hint
+                    j1 = (await client.post(f"{RAG}/qa", json=p1)).json()
+                except Exception:
+                    j1 = {}
+                try:
+                    p2 = {"q": v, "k": 5, "sticky": True}
+                    if spaces_hint:
+                        p2["spaces"] = spaces_hint
+                    j2 = (await client.post(f"{RAG}/qa", json=p2)).json()
+                except Exception:
+                    j2 = {}
 
 
-            # 더 나은 쪽 선택
-            best = max([j1, j2], key=_qa_score)
-            if _qa_score(best) <= 0:
-                continue
+                # 더 나은 쪽 선택
+                best = max([j1, j2], key=_qa_score)
+                if _qa_score(best) <= 0:
+                    continue
 
-            items = best.get("items") or []
-            ctx_text = "\n\n".join(extract_texts(items))[:MAX_CTX_CHARS]
-            ctx_text = mark_lonely_numbers_as_total(ctx_text)
+                items = best.get("items") or []
+                ctx_text = "\n\n".join(extract_texts(items))[:MAX_CTX_CHARS]
+                ctx_text = mark_lonely_numbers_as_total(ctx_text)
 
-            if not ctx_text.strip():
-                continue
-            if (len(ctx_text) < ROUTER_QA_MIN_CTX_LEN) and not file_hint:
-                _dbg(f"qa_skip_short: ctx_len={len(ctx_text)} min={ROUTER_QA_MIN_CTX_LEN}")
-                continue
-            if not (file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text)):
-                continue
+                if not ctx_text.strip():
+                    continue
+                if (len(ctx_text) < ROUTER_QA_MIN_CTX_LEN) and not file_hint:
+                    _dbg(f"qa_skip_short: ctx_len={len(ctx_text)} min={ROUTER_QA_MIN_CTX_LEN}")
+                    continue
+                if not (file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text)):
+                    continue
 
-            qa_json  = best
-            qa_items = best.get("items") or []
-            qa_urls = _limit_urls(best.get("source_urls")) if best.get("source_urls") else _collect_urls_from_items(qa_items)
-            _dbg(f"qa_pick: q='{v}' hits={best.get('hits')} items={len(qa_items)} ctx_len={len(ctx_text)}")
-            break
+                qa_json  = best
+                qa_items = best.get("items") or []
+                qa_urls = _limit_urls(best.get("source_urls")) if best.get("source_urls") else _collect_urls_from_items(qa_items)
+                _dbg(f"qa_pick: q='{v}' hits={best.get('hits')} items={len(qa_items)} ctx_len={len(ctx_text)}")
+                break
 
     # 2-A) QA 성공
     if qa_json:
