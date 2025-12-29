@@ -88,6 +88,8 @@ services:
       context: ./open-webui
       dockerfile: Dockerfile
     environment:
+      OPENAI_API_BASE_URL: "http://rag-router:8000/v1"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
       ENABLE_RAG_PROXY: "true"
       RAG_PROXY_URL: "http://rag-proxy:8080"
       BYPASS_EMBEDDING_AND_RETRIEVAL: "true"
