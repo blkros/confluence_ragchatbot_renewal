@@ -2069,6 +2069,26 @@ async def query(payload: dict = Body(...)):
             "score": 0.5,
         })
 
+    # If a source filter is provided, pull all chunks from that source
+    # so we don't get stuck with only a title hit.
+    if src_filter:
+        try:
+            wanted = _norm_source(str(src_filter))
+            ds = getattr(vectorstore, "docstore", None)
+            all_docs = getattr(ds, "_dict", {}).values() if ds else []
+            for d in all_docs:
+                md = dict(d.metadata or {})
+                src = _norm_source(str(md.get("source","")))
+                if src == wanted:
+                    md["source"] = str(md.get("source",""))
+                    pool_hits.append({
+                        "text": d.page_content or "",
+                        "metadata": md,
+                        "score": 0.45,
+                    })
+        except Exception:
+            pass
+
     # dense 풀에도 space/page 보너스
     _apply_space_hint(pool_hits, space)
     _apply_page_hint(pool_hits, page_id)
