@@ -743,6 +743,7 @@ async def chat(req: ChatReq):
             qa_json  = best
             qa_items = best.get("items") or []
             qa_urls = _limit_urls(best.get("source_urls")) if best.get("source_urls") else _collect_urls_from_items(qa_items)
+            _dbg(f"qa_pick: q='{v}' hits={best.get('hits')} items={len(qa_items)} ctx_len={len(ctx_text)}")
             break
 
     # 2-A) QA 성공
@@ -761,6 +762,8 @@ async def chat(req: ChatReq):
         file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text)
     )
     if not qa_ok:
+        if ROUTER_DEBUG:
+            _dbg(f"qa_reject: ctx_len={len(ctx_text)} file_hint={file_hint} good_ctx={is_good_context_for_qa(ctx_text)} rel={is_relevant(orig_user_msg, ctx_text) if ctx_text else False}")
         qa_json = None
 
     if qa_json:
@@ -792,6 +795,7 @@ async def chat(req: ChatReq):
                 raw = ""
 
         content = sanitize(clean_llm_output(raw)) or "인덱스에 근거 없음"
+        _dbg(f"qa_answer: raw_len={len(raw)} content_len={len(content)}")
 
         full_ctx_for_check = sanitize(ctx_text)
         strict = bool(spaces_hint) and ROUTER_STRICT_RAG and not file_hint
