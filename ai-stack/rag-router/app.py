@@ -45,6 +45,7 @@ ROUTER_SHOW_SOURCES = (os.getenv("ROUTER_SHOW_SOURCES", "1").lower() not in ("0"
 ROUTER_SOURCES_MAX  = int(os.getenv("ROUTER_SOURCES_MAX", "5"))
 ROUTER_SHOW_CONTEXT_LABEL = (os.getenv("ROUTER_SHOW_CONTEXT_LABEL", "1").lower() not in ("0","false","no"))
 ROUTER_DEBUG = (os.getenv("ROUTER_DEBUG", "0").lower() not in ("0","false","no"))
+ROUTER_QA_MIN_CTX_LEN = int(os.getenv("ROUTER_QA_MIN_CTX_LEN", "120"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]{2,}")
@@ -737,7 +738,12 @@ async def chat(req: ChatReq):
             ctx_text = "\n\n".join(extract_texts(items))[:MAX_CTX_CHARS]
             ctx_text = mark_lonely_numbers_as_total(ctx_text)
 
-            if not (ctx_text.strip() and (file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text))):
+            if not ctx_text.strip():
+                continue
+            if (len(ctx_text) < ROUTER_QA_MIN_CTX_LEN) and not file_hint:
+                _dbg(f"qa_skip_short: ctx_len={len(ctx_text)} min={ROUTER_QA_MIN_CTX_LEN}")
+                continue
+            if not (file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text)):
                 continue
 
             qa_json  = best
@@ -761,6 +767,9 @@ async def chat(req: ChatReq):
     qa_ok = bool(ctx_text.strip()) and (
         file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text)
     )
+    if qa_ok and (len(ctx_text) < ROUTER_QA_MIN_CTX_LEN) and not file_hint:
+        _dbg(f"qa_reject_short: ctx_len={len(ctx_text)} min={ROUTER_QA_MIN_CTX_LEN}")
+        qa_ok = False
     if not qa_ok:
         if ROUTER_DEBUG:
             _dbg(f"qa_reject: ctx_len={len(ctx_text)} file_hint={file_hint} good_ctx={is_good_context_for_qa(ctx_text)} rel={is_relevant(orig_user_msg, ctx_text) if ctx_text else False}")
