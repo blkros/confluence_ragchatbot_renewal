@@ -839,7 +839,7 @@ async def chat(req: ChatReq):
         # [PATCH] /qa 호출 페이로드에 spaces 전달
         for v in variants:
             try:
-                payload1 = {"question": v, "k": 5, "sticky": False, "need_fallback": False}
+                payload1 = {"question": v, "k": 10, "sticky": False, "need_fallback": False}
                 if spaces_hint:
                     payload1["spaces"] = spaces_hint
                 j1 = (await client.post(f"{RAG}/query", json=payload1)).json()
@@ -847,7 +847,7 @@ async def chat(req: ChatReq):
                 j1 = {}
 
             try:
-                payload2 = {"question": v, "k": 5, "sticky": True, "need_fallback": False}
+                payload2 = {"question": v, "k": 10, "sticky": True, "need_fallback": False}
                 if spaces_hint:
                     payload2["spaces"] = spaces_hint
                 j2 = (await client.post(f"{RAG}/query", json=payload2)).json()
@@ -863,6 +863,11 @@ async def chat(req: ChatReq):
                             or [c.get("text","") for c in (qj.get("contexts") or [])]
                             or [it.get("text","") for it in (qj.get("items") or [])])
                 ctx = "\n\n---\n\n".join([t for t in ctx_list if t])[:MAX_CTX_CHARS]
+                if ROUTER_DEBUG:
+                    top = items[0] if items else {}
+                    top_kind = (top.get("metadata") or {}).get("kind") or top.get("kind")
+                    top_text = (top.get("text") or "") if isinstance(top, dict) else ""
+                    _dbg(f"query_resp: q='{v}' hits={qj.get('hits')} items={len(items)} ctx_texts={len(ctx_list)} top_kind={top_kind} top_len={len(str(top_text))}")
 
                 if len(ctx) > len(best_ctx_any):
                     best_ctx_any = ctx; best_urls_any = urls[:]; used_q_any = v
