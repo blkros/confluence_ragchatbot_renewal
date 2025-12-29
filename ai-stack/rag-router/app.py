@@ -602,16 +602,37 @@ def _get_item_source(it: dict) -> str:
     src = it.get("source") or meta.get("source") or ""
     return str(src or "")
 
-def _prefer_single_source(items: list[dict]) -> tuple[list[dict], str]:
+def _source_match_score(src: str, query: str) -> int:
+    if not src or not query:
+        return 0
+    base = os.path.basename(src)
+    base = re.sub(r"\.[A-Za-z0-9]+$", "", base)
+    tokens = re.findall(r"[0-9A-Za-z]+|[가-힣]+", base)
+    q = query or ""
+    score = 0
+    for t in tokens:
+        if t and t in q:
+            score += len(t)
+    return score
+
+def _prefer_single_source(items: list[dict], query: str = "") -> tuple[list[dict], str]:
     counts: dict[str, int] = {}
+    scores: dict[str, int] = {}
     for it in items or []:
         src = _get_item_source(it)
-        if src:
-            counts[src] = counts.get(src, 0) + 1
+        if not src:
+            continue
+        counts[src] = counts.get(src, 0) + 1
+        if query:
+            scores[src] = max(scores.get(src, 0), _source_match_score(src, query))
     if not counts:
         return items, ""
-    local = [s for s in counts if _LOCAL_SRC_RE.search(s)]
-    primary = max(local, key=lambda s: counts[s]) if local else max(counts, key=counts.get)
+    # If any source matches the query, prefer the best match.
+    if scores and max(scores.values()) > 0:
+        primary = max(scores, key=lambda s: (scores[s], counts.get(s, 0)))
+    else:
+        local = [s for s in counts if _LOCAL_SRC_RE.search(s)]
+        primary = max(local, key=lambda s: counts[s]) if local else max(counts, key=counts.get)
     filtered = [it for it in items or [] if _get_item_source(it) == primary]
     return filtered, primary
 
@@ -813,7 +834,7 @@ async def chat(req: ChatReq):
     # 2-A) QA 성공
     if qa_json:
         if file_hint and qa_items:
-            qa_items, primary_src = _prefer_single_source(qa_items)
+            qa_items, primary_src = _prefer_single_source(qa_items, orig_user_msg)
             if primary_src and _LOCAL_SRC_RE.search(primary_src):
                 qa_urls = []
             if ROUTER_DEBUG and primary_src:
@@ -932,7 +953,7 @@ async def chat(req: ChatReq):
             for qj in (j1, j2):
                 items = (qj.get("items") or qj.get("contexts") or [])
                 if file_hint and items:
-                    filtered, primary_src = _prefer_single_source(items)
+                    filtered, primary_src = _prefer_single_source(items, orig_user_msg)
                     if primary_src and _LOCAL_SRC_RE.search(primary_src):
                         if ROUTER_DEBUG and len(filtered) < len(items):
                             _dbg(f"query_source_filter: src='{primary_src}' items={len(filtered)}")
