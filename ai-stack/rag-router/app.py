@@ -843,6 +843,7 @@ async def chat(req: ChatReq):
 
     # 2-A) QA 성공
     if qa_json:
+        primary_src = ""
         if file_hint and qa_items:
             qa_items, primary_src = _prefer_single_source(qa_items, clean_user_msg)
             if primary_src and _LOCAL_SRC_RE.search(primary_src):
@@ -851,6 +852,26 @@ async def chat(req: ChatReq):
                 _dbg(f"qa_source_filter: src='{primary_src}' items={len(qa_items)}")
         ctx_text = "\n\n".join(extract_texts(qa_items))[:MAX_CTX_CHARS]
         ctx_text = mark_lonely_numbers_as_total(ctx_text)
+        if file_hint and primary_src:
+            top_kind = ""
+            if qa_items:
+                md = (qa_items[0].get("metadata") or {}) if isinstance(qa_items[0], dict) else {}
+                top_kind = md.get("kind") or qa_items[0].get("kind") or ""
+            if len(ctx_text) < ROUTER_QA_MIN_CTX_LEN or top_kind == "title":
+                try:
+                    payload_src = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": primary_src}
+                    async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+                        j_src = (await client.post(f"{RAG}/query", json=payload_src)).json()
+                    items2 = (j_src.get("items") or j_src.get("contexts") or [])
+                    if items2:
+                        qa_items = items2
+                        qa_urls = []
+                        ctx_text = "\n\n".join(extract_texts(qa_items))[:MAX_CTX_CHARS]
+                        ctx_text = mark_lonely_numbers_as_total(ctx_text)
+                        if ROUTER_DEBUG:
+                            _dbg(f"qa_source_requery: src='{primary_src}' ctx_len={len(ctx_text)} items={len(items2)}")
+                except Exception:
+                    pass
         if not file_hint:
             for it in qa_items or []:
                 meta = it.get("metadata") or {}
