@@ -597,6 +597,24 @@ def _items_have_local_source(items: list[dict] | None) -> bool:
             return True
     return False
 
+def _get_item_source(it: dict) -> str:
+    meta = it.get("metadata") or {}
+    src = it.get("source") or meta.get("source") or ""
+    return str(src or "")
+
+def _prefer_single_source(items: list[dict]) -> tuple[list[dict], str]:
+    counts: dict[str, int] = {}
+    for it in items or []:
+        src = _get_item_source(it)
+        if src:
+            counts[src] = counts.get(src, 0) + 1
+    if not counts:
+        return items, ""
+    local = [s for s in counts if _LOCAL_SRC_RE.search(s)]
+    primary = max(local, key=lambda s: counts[s]) if local else max(counts, key=counts.get)
+    filtered = [it for it in items or [] if _get_item_source(it) == primary]
+    return filtered, primary
+
 def _label_for_context(items: list[dict] | None, urls: list[str] | None) -> str:
     if _items_have_local_source(items):
         return "로컬 문서(RAG)"
@@ -794,6 +812,12 @@ async def chat(req: ChatReq):
 
     # 2-A) QA 성공
     if qa_json:
+        if file_hint and qa_items:
+            qa_items, primary_src = _prefer_single_source(qa_items)
+            if primary_src and _LOCAL_SRC_RE.search(primary_src):
+                qa_urls = []
+            if ROUTER_DEBUG and primary_src:
+                _dbg(f"qa_source_filter: src='{primary_src}' items={len(qa_items)}")
         ctx_text = "\n\n".join(extract_texts(qa_items))[:MAX_CTX_CHARS]
         ctx_text = mark_lonely_numbers_as_total(ctx_text)
         if not file_hint:
@@ -907,10 +931,20 @@ async def chat(req: ChatReq):
             # 여기서 바로 평가/갱신 (바깥에 동일 코드 두지 말기)
             for qj in (j1, j2):
                 items = (qj.get("items") or qj.get("contexts") or [])
+                if file_hint and items:
+                    filtered, primary_src = _prefer_single_source(items)
+                    if primary_src and _LOCAL_SRC_RE.search(primary_src):
+                        if ROUTER_DEBUG and len(filtered) < len(items):
+                            _dbg(f"query_source_filter: src='{primary_src}' items={len(filtered)}")
+                        items = filtered
                 urls  = _limit_urls(qj.get("source_urls")) if qj.get("source_urls") else _collect_urls_from_items(items)
+                if items and _items_have_local_source(items):
+                    urls = []
                 ctx_list = (qj.get("context_texts")
                             or [c.get("text","") for c in (qj.get("contexts") or [])]
                             or [it.get("text","") for it in (qj.get("items") or [])])
+                if file_hint and items:
+                    ctx_list = extract_texts(items)
                 ctx = "\n\n---\n\n".join([t for t in ctx_list if t])[:MAX_CTX_CHARS]
                 if ROUTER_DEBUG:
                     top = items[0] if items else {}
@@ -921,7 +955,7 @@ async def chat(req: ChatReq):
                     top = items[0]
                     md = (top.get("metadata") or {}) if isinstance(top, dict) else {}
                     top_kind = md.get("kind") or top.get("kind")
-                    src = md.get("source") or top.get("source")
+                    src = _get_item_source(top)
                     if top_kind == "title" and src:
                         try:
                             payload_src = {"question": v, "k": 20, "sticky": False, "need_fallback": False, "source": src}
@@ -931,6 +965,10 @@ async def chat(req: ChatReq):
                             ctx_list2 = (j_src.get("context_texts")
                                          or [c.get("text","") for c in (j_src.get("contexts") or [])]
                                          or [it.get("text","") for it in (j_src.get("items") or [])])
+                            if file_hint and items2:
+                                ctx_list2 = extract_texts(items2)
+                            if items2 and _items_have_local_source(items2):
+                                urls2 = []
                             ctx2 = "\n\n---\n\n".join([t for t in ctx_list2 if t])[:MAX_CTX_CHARS]
                             if len(ctx2) > len(ctx):
                                 items = items2
