@@ -868,6 +868,29 @@ async def chat(req: ChatReq):
                     top_kind = (top.get("metadata") or {}).get("kind") or top.get("kind")
                     top_text = (top.get("text") or "") if isinstance(top, dict) else ""
                     _dbg(f"query_resp: q='{v}' hits={qj.get('hits')} items={len(items)} ctx_texts={len(ctx_list)} top_kind={top_kind} top_len={len(str(top_text))}")
+                if items and len(ctx) < ROUTER_QA_MIN_CTX_LEN:
+                    top = items[0]
+                    md = (top.get("metadata") or {}) if isinstance(top, dict) else {}
+                    top_kind = md.get("kind") or top.get("kind")
+                    src = md.get("source") or top.get("source")
+                    if top_kind == "title" and src:
+                        try:
+                            payload_src = {"question": v, "k": 20, "sticky": False, "need_fallback": False, "source": src}
+                            j_src = (await client.post(f"{RAG}/query", json=payload_src)).json()
+                            items2 = (j_src.get("items") or j_src.get("contexts") or [])
+                            urls2  = _limit_urls(j_src.get("source_urls")) if j_src.get("source_urls") else _collect_urls_from_items(items2)
+                            ctx_list2 = (j_src.get("context_texts")
+                                         or [c.get("text","") for c in (j_src.get("contexts") or [])]
+                                         or [it.get("text","") for it in (j_src.get("items") or [])])
+                            ctx2 = "\n\n---\n\n".join([t for t in ctx_list2 if t])[:MAX_CTX_CHARS]
+                            if len(ctx2) > len(ctx):
+                                items = items2
+                                urls = urls2
+                                ctx_list = ctx_list2
+                                ctx = ctx2
+                                _dbg(f"query_source_boost: src='{src}' ctx_len={len(ctx2)} items={len(items2)}")
+                        except Exception:
+                            pass
 
                 if len(ctx) > len(best_ctx_any):
                     best_ctx_any = ctx; best_urls_any = urls[:]; used_q_any = v
