@@ -393,6 +393,13 @@ def strip_reasoning(text: str) -> str:
 
     return text.strip()
 
+def clean_llm_output(text: str) -> str:
+    cleaned = strip_reasoning(text or "").strip()
+    if cleaned:
+        return cleaned
+    # 모델이 <think> 안에만 답을 쓰는 경우 대비
+    return re.sub(r'(?is)</?think[^>]*>', '', text or "").strip()
+
 
 def mark_lonely_numbers_as_total(text: str) -> str:
     """
@@ -653,7 +660,7 @@ async def chat(req: ChatReq):
                 try:
                     msg = j.get("choices", [{}])[0].get("message", {})
                     c = msg.get("content") or ""
-                    msg["content"] = strip_reasoning(c)
+                    msg["content"] = clean_llm_output(c)
                     j["choices"][0]["message"] = msg
                 except Exception:
                     pass
@@ -773,7 +780,7 @@ async def chat(req: ChatReq):
                 print(f"[router] OPENAI chat error: {e}")
                 raw = ""
 
-        content = sanitize(strip_reasoning(raw).strip()) or "인덱스에 근거 없음"
+        content = sanitize(clean_llm_output(raw)) or "인덱스에 근거 없음"
 
         full_ctx_for_check = sanitize(ctx_text)
         strict = bool(spaces_hint) and ROUTER_STRICT_RAG and not file_hint
@@ -884,7 +891,7 @@ async def chat(req: ChatReq):
                 r = await client.post(f"{OPENAI}/chat/completions", json=payload)
                 rj = r.json()
                 raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-                content = sanitize(strip_reasoning(raw).strip()) or "죄송해요. 지금은 답을 찾지 못했어요."
+                content = sanitize(clean_llm_output(raw)) or "죄송해요. 지금은 답을 찾지 못했어요."
             except (httpx.RequestError, ValueError):
                 content = "죄송해요. 지금은 답을 찾지 못했어요."
 
@@ -939,7 +946,7 @@ async def chat(req: ChatReq):
             print(f"[router] OPENAI chat error: {e}")
             raw = ""
 
-    content = sanitize(strip_reasoning(raw).strip()) or "인덱스에 근거 없음"
+    content = sanitize(clean_llm_output(raw)) or "인덱스에 근거 없음"
     if not file_hint and best_ctx and _LOCAL_SRC_RE.search(best_ctx):
         file_hint = True
 
