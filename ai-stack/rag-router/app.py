@@ -421,6 +421,15 @@ def clean_llm_output(text: str) -> str:
     # 모델이 <think> 안에만 답을 쓰는 경우 대비
     return re.sub(r'(?is)</?think[^>]*>', '', text or "").strip()
 
+def build_final_only_prompt(ctx_text: str) -> str:
+    return (
+        "You must answer only with the final answer. Do not include <think> or reasoning.\n"
+        "If you cannot answer from the context, reply exactly: 인덱스에 근거 없음\n"
+        "[컨텍스트 시작]\n"
+        f"{ctx_text}\n"
+        "[컨텍스트 끝]\n"
+    )
+
 def _replace_last_user(messages: list[dict], content: str) -> list[dict]:
     if not messages:
         return messages
@@ -792,15 +801,6 @@ async def chat(req: ChatReq):
     qa_ok = bool(ctx_text.strip()) and (
         file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text)
     )
-
-def build_final_only_prompt(ctx_text: str) -> str:
-    return (
-        "You must answer only with the final answer. Do not include <think> or reasoning.\n"
-        "If you cannot answer from the context, reply exactly: 인덱스에 근거 없음\n"
-        "[컨텍스트 시작]\n"
-        f"{ctx_text}\n"
-        "[컨텍스트 끝]\n"
-    )
     if qa_ok and (len(ctx_text) < ROUTER_QA_MIN_CTX_LEN) and not file_hint:
         _dbg(f"qa_reject_short: ctx_len={len(ctx_text)} min={ROUTER_QA_MIN_CTX_LEN}")
         qa_ok = False
@@ -1046,14 +1046,14 @@ def build_final_only_prompt(ctx_text: str) -> str:
             r = await client.post(f"{OPENAI}/chat/completions", json=payload)
             rj = r.json()
             raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-                if ROUTER_DEBUG and not raw:
-                    _dbg(f"query_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
-                if not raw:
-                    short_ctx = ctx_for_prompt[:2000]
-                    payload["messages"] = [{"role":"system","content":build_final_only_prompt(short_ctx)}] + [{"role":"user","content": clean_user_msg}]
-                    r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
-                    rj2 = r2.json()
-                    raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+            if ROUTER_DEBUG and not raw:
+                _dbg(f"query_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
+            if not raw:
+                short_ctx = ctx_for_prompt[:2000]
+                payload["messages"] = [{"role":"system","content":build_final_only_prompt(short_ctx)}] + [{"role":"user","content": clean_user_msg}]
+                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                rj2 = r2.json()
+                raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
         except (httpx.RequestError, ValueError) as e:
             print(f"[router] OPENAI chat error: {e}")
             raw = ""
