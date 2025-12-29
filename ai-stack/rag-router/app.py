@@ -44,6 +44,7 @@ HEADING = os.getenv("ROUTER_HEADING", "")
 ROUTER_SHOW_SOURCES = (os.getenv("ROUTER_SHOW_SOURCES", "1").lower() not in ("0","false","no"))
 ROUTER_SOURCES_MAX  = int(os.getenv("ROUTER_SOURCES_MAX", "5"))
 ROUTER_SHOW_CONTEXT_LABEL = (os.getenv("ROUTER_SHOW_CONTEXT_LABEL", "1").lower() not in ("0","false","no"))
+ROUTER_DEBUG = (os.getenv("ROUTER_DEBUG", "0").lower() not in ("0","false","no"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]{2,}")
@@ -267,6 +268,15 @@ def _httpx_timeout():
         write=ROUTER_WRITE_TIMEOUT,
         pool=ROUTER_POOL_TIMEOUT,
     )
+
+def _pick_max_tokens(req_max: Optional[int]) -> int:
+    if req_max is None or req_max <= 0:
+        return OUTPUT_TOKENS
+    return req_max
+
+def _dbg(msg: str) -> None:
+    if ROUTER_DEBUG:
+        print(f"[router] {msg}")
 
 def _qa_score(j):
     if not j: return -1
@@ -641,6 +651,7 @@ async def chat(req: ChatReq):
     file_hint = bool(_FILE_HINT_RE.search(orig_user_msg))
     variants = generate_query_variants(orig_user_msg)
     limited_msgs = await _limited_messages(req.messages)
+    _dbg(f"req: user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
 
     # 메타 태스크면 RAG 건너뛰고 그대로 모델로 전달 (JSON 형식 보존)
     if _is_webui_task(orig_user_msg):
@@ -649,7 +660,7 @@ async def chat(req: ChatReq):
             "messages": limited_msgs,
             "stream": False,
             "temperature": 0,
-            "max_tokens": req.max_tokens or ROUTER_MAX_TOKENS,
+            "max_tokens": _pick_max_tokens(req.max_tokens) or ROUTER_MAX_TOKENS,
         }
         try:
             async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
@@ -763,7 +774,7 @@ async def chat(req: ChatReq):
         ctx_for_prompt = _fit_ctx_to_budget(sys_prefix, user_for_budget, ctx_for_prompt)
 
         system_prompt = build_system_with_context(ctx_for_prompt, mode)
-        max_tokens = req.max_tokens or OUTPUT_TOKENS
+        max_tokens = _pick_max_tokens(req.max_tokens)
         payload = {
             "model": OPENAI_MODEL,
             "messages": [{"role":"system","content":system_prompt}] + limited_msgs,
@@ -878,7 +889,7 @@ async def chat(req: ChatReq):
                 "‘인덱스에 근거 없음’ 같은 말은 하지 마세요."
             )
         }
-        max_tokens = req.max_tokens or OUTPUT_TOKENS
+        max_tokens = _pick_max_tokens(req.max_tokens)
         payload = {
             "model": OPENAI_MODEL,
             "messages": [sysmsg] + limited_msgs,
@@ -926,7 +937,7 @@ async def chat(req: ChatReq):
     # 컨텍스트를 토큰 예산에 맞춰 컷
     ctx_for_prompt = _fit_ctx_to_budget(sys_prefix, user_for_budget, full_ctx_for_check)
     system_prompt = build_system_with_context(ctx_for_prompt, mode)
-    max_tokens = req.max_tokens or OUTPUT_TOKENS
+    max_tokens = _pick_max_tokens(req.max_tokens)
 
     payload = {
         "model": OPENAI_MODEL,
