@@ -837,18 +837,18 @@ async def chat(req: ChatReq):
         # [PATCH] /qa 호출 페이로드에 spaces 전달
         for v in variants:
             try:
-                payload1 = {"q": v, "k": 5, "sticky": False}
-                if spaces_hint:                     
+                payload1 = {"question": v, "k": 5, "sticky": False, "need_fallback": False}
+                if spaces_hint:
                     payload1["spaces"] = spaces_hint
-                j1 = (await client.post(f"{RAG}/qa", json=payload1)).json()
+                j1 = (await client.post(f"{RAG}/query", json=payload1)).json()
             except Exception:
                 j1 = {}
 
             try:
-                payload2 = {"q": v, "k": 5, "sticky": True}
-                if spaces_hint:                     
+                payload2 = {"question": v, "k": 5, "sticky": True, "need_fallback": False}
+                if spaces_hint:
                     payload2["spaces"] = spaces_hint
-                j2 = (await client.post(f"{RAG}/qa", json=payload2)).json()
+                j2 = (await client.post(f"{RAG}/query", json=payload2)).json()
             except Exception:
                 j2 = {}
 
@@ -870,6 +870,7 @@ async def chat(req: ChatReq):
         best_ctx = best_ctx_good or best_ctx_any
         src_urls = best_urls_good or best_urls_any
         used_q_for_relevance = used_q_good if best_ctx_good else used_q_any
+        _dbg(f"query_pick: q='{used_q_for_relevance}' ctx_len={len(best_ctx)} urls={len(src_urls)}")
 
         # 게이트
         if best_ctx and not (file_hint or is_good_context_for_qa(best_ctx) or
