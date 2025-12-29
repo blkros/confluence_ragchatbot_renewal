@@ -2215,6 +2215,43 @@ async def query(payload: dict = Body(...)):
             "score": round(sc, 4),
             "title": md.get("title", ""),
         })
+
+    # If source is fixed but only title/summary are selected, fall back to chunks from that source.
+    if src_filter and (not items or all((it.get("metadata") or {}).get("kind") in ("title", "summary") for it in items)):
+        try:
+            wanted = _norm_source(str(src_filter))
+            ds = getattr(vectorstore, "docstore", None)
+            all_docs = getattr(ds, "_dict", {}).values() if ds else []
+            alt = []
+            for d in all_docs:
+                md = dict(d.metadata or {})
+                if _norm_source(str(md.get("source",""))) != wanted:
+                    continue
+                if md.get("kind") in ("title", "summary"):
+                    continue
+                alt.append({
+                    "text": d.page_content or "",
+                    "metadata": md,
+                    "score": 0.35,
+                })
+            if alt:
+                alt = alt[:k]
+                items = []
+                contexts = []
+                for h in alt:
+                    md = dict(h["metadata"])
+                    sc = float(h.get("score") or 0.0)
+                    items.append({"text": h["text"], "metadata": md, "score": round(sc, 4)})
+                    contexts.append({
+                        "text": h["text"],
+                        "source": md.get("source"),
+                        "page": md.get("page"),
+                        "kind": md.get("kind", "chunk"),
+                        "score": round(sc, 4),
+                        "title": md.get("title", ""),
+                    })
+        except Exception:
+            pass
     
     # PDF/업로드 필터
     items    = _filter_items_for_router(items)
