@@ -19,7 +19,10 @@ _NUM_ONLY_LINE = re.compile(r'(?m)^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
 _FILE_HINT_RE = re.compile(r"(?:file|document|pdf|첨부|파일|문서|자료)", re.I)
 _LOCAL_SRC_RE = re.compile(r"/uploads/|\\uploads\\", re.I)
 _CONF_HOST_RE = re.compile(r"https?://[^/]*confluence[^/]*", re.I)
-_CONTEXT_CUT_RE = re.compile(r"\s*---\s*\[?context\]?\s*.*$|\s*---\s*\[?컨텍스트\]?\s*.*$", re.I)
+_CONTEXT_CUT_RE = re.compile(
+    r"\s*[-–—]{2,}\s*\[?context\]?\s*.*$|\s*[-–—]{2,}\s*\[?컨텍스트\]?\s*.*$",
+    re.I | re.S,
+)
 
 ROUTER_STRICT_RAG = (os.getenv("ROUTER_STRICT_RAG", "1").lower() not in ("0","false","no"))
 ANSWER_MIN_OVERLAP = float(os.getenv("ROUTER_ANSWER_MIN_OVERLAP", "0.12"))
@@ -488,6 +491,10 @@ def normalize_query_router(q: str) -> str:
     if not q: return ""
     s = q.strip()
     s = _CONTEXT_CUT_RE.sub("", s)
+    if ("---" in s or "—" in s or "–" in s) and re.search(r"\[?컨텍스트\]|\[?context\]", s, re.I):
+        m = re.search(r"\[?컨텍스트\]|\[?context\]", s, re.I)
+        if m:
+            s = s[:m.start()].rstrip()
     s = re.sub(r'(?i)\bstfp\b|\bsfttp\b|\bsfpt\b|\bsftp\b', 'SFTP', s)
     s = s.replace("스텝", "SFTP")
     return s
@@ -834,7 +841,7 @@ async def chat(req: ChatReq):
     # 2-A) QA 성공
     if qa_json:
         if file_hint and qa_items:
-            qa_items, primary_src = _prefer_single_source(qa_items, orig_user_msg)
+            qa_items, primary_src = _prefer_single_source(qa_items, clean_user_msg)
             if primary_src and _LOCAL_SRC_RE.search(primary_src):
                 qa_urls = []
             if ROUTER_DEBUG and primary_src:
@@ -953,7 +960,7 @@ async def chat(req: ChatReq):
             for qj in (j1, j2):
                 items = (qj.get("items") or qj.get("contexts") or [])
                 if file_hint and items:
-                    filtered, primary_src = _prefer_single_source(items, orig_user_msg)
+                    filtered, primary_src = _prefer_single_source(items, clean_user_msg)
                     if primary_src and _LOCAL_SRC_RE.search(primary_src):
                         if ROUTER_DEBUG and len(filtered) < len(items):
                             _dbg(f"query_source_filter: src='{primary_src}' items={len(filtered)}")
