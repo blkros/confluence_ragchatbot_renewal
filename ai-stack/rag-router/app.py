@@ -18,6 +18,7 @@ TZ = os.getenv("ROUTER_TZ", "Asia/Seoul")
 _NUM_ONLY_LINE = re.compile(r'(?m)^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
 _FILE_HINT_RE = re.compile(r"(?:file|document|pdf|첨부|파일|문서|자료)", re.I)
 _LOCAL_SRC_RE = re.compile(r"/uploads/|\\uploads\\", re.I)
+_CONF_HOST_RE = re.compile(r"https?://[^/]*confluence[^/]*", re.I)
 
 ROUTER_STRICT_RAG = (os.getenv("ROUTER_STRICT_RAG", "1").lower() not in ("0","false","no"))
 ANSWER_MIN_OVERLAP = float(os.getenv("ROUTER_ANSWER_MIN_OVERLAP", "0.12"))
@@ -42,6 +43,7 @@ HEADING = os.getenv("ROUTER_HEADING", "")
 # [추가] 출처 표시 on/off 및 최대 개수
 ROUTER_SHOW_SOURCES = (os.getenv("ROUTER_SHOW_SOURCES", "1").lower() not in ("0","false","no"))
 ROUTER_SOURCES_MAX  = int(os.getenv("ROUTER_SOURCES_MAX", "5"))
+ROUTER_SHOW_CONTEXT_LABEL = (os.getenv("ROUTER_SHOW_CONTEXT_LABEL", "1").lower() not in ("0","false","no"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]{2,}")
@@ -450,6 +452,22 @@ def _limit_urls(urls: List[str] | None, top_n: int = ROUTER_SOURCES_MAX) -> List
             break
     return out
 
+def _items_have_local_source(items: list[dict] | None) -> bool:
+    for it in items or []:
+        meta = it.get("metadata") or {}
+        src = it.get("source") or meta.get("source") or ""
+        if _LOCAL_SRC_RE.search(str(src)):
+            return True
+    return False
+
+def _label_for_context(items: list[dict] | None, urls: list[str] | None) -> str:
+    if _items_have_local_source(items):
+        return "로컬 문서(RAG)"
+    for u in urls or []:
+        if _CONF_HOST_RE.search(u or ""):
+            return "Confluence(RAG)"
+    return "RAG"
+
 
 def extract_texts(items: List[dict]) -> List[str]:
     texts = []
@@ -645,6 +663,8 @@ async def chat(req: ChatReq):
         qa_json = None
 
     if qa_json:
+        if not file_hint and _items_have_local_source(qa_items):
+            file_hint = True
         ctx_for_prompt = sanitize(ctx_text)
         mode = pick_answer_mode(orig_user_msg, ctx_for_prompt)
 
@@ -679,10 +699,13 @@ async def chat(req: ChatReq):
             content = "인덱스에 근거 없음"
             qa_urls = []
         # 출처는 허용 호스트만(환경변수로 제어)
-        if ROUTER_SHOW_SOURCES:
+        if ROUTER_SHOW_SOURCES and content != "인덱스에 근거 없음":
             urls = _filter_urls_by_host(qa_urls)
             if urls:
                 content += "\n\n출처:\n" + "\n".join(f"- {u}" for u in urls)
+
+        if ROUTER_SHOW_CONTEXT_LABEL:
+            content = f"근거: {_label_for_context(qa_items, qa_urls)}\n{content}"
 
         return {
             "id": f"cmpl-{uuid.uuid4()}",
@@ -784,6 +807,9 @@ async def chat(req: ChatReq):
             except (httpx.RequestError, ValueError):
                 content = "죄송해요. 지금은 답을 찾지 못했어요."
 
+        if ROUTER_SHOW_CONTEXT_LABEL:
+            content = "근거: 없음(LLM)\n" + content
+
         return {
             "id": f"cmpl-{uuid.uuid4()}",
             "object": "chat.completion",
@@ -834,17 +860,22 @@ async def chat(req: ChatReq):
             raw = ""
 
     content = sanitize(strip_reasoning(raw).strip()) or "인덱스에 근거 없음"
+    if not file_hint and best_ctx and _LOCAL_SRC_RE.search(best_ctx):
+        file_hint = True
 
     #  STRICT는 스페이스 힌트 있을 때만, 출처 필터 적용
-    strict = bool(spaces_hint) and ROUTER_STRICT_RAG
+    strict = bool(spaces_hint) and ROUTER_STRICT_RAG and not file_hint
     if strict and not supported_by_context(content, full_ctx_for_check):
         content = "인덱스에 근거 없음"
         src_urls = []
 
-    if ROUTER_SHOW_SOURCES:
+    if ROUTER_SHOW_SOURCES and content != "인덱스에 근거 없음":
         urls = _filter_urls_by_host(src_urls)
         if urls:
             content += "\n\n출처:\n" + "\n".join(f"- {u}" for u in urls)
+
+    if ROUTER_SHOW_CONTEXT_LABEL:
+        content = f"근거: {_label_for_context(qa_items, src_urls)}\n{content}"
 
     return {
         "id": f"cmpl-{uuid.uuid4()}",
