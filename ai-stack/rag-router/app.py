@@ -17,6 +17,7 @@ ROUTER_MODEL_ID = os.getenv("ROUTER_MODEL_ID", "qwen3-30b-a3b-fp8-router")
 TZ = os.getenv("ROUTER_TZ", "Asia/Seoul")
 _NUM_ONLY_LINE = re.compile(r'(?m)^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
 _FILE_HINT_RE = re.compile(r"(?:file|document|pdf|첨부|파일|문서|자료)", re.I)
+_LOCAL_SRC_RE = re.compile(r"/uploads/|\\uploads\\", re.I)
 
 ROUTER_STRICT_RAG = (os.getenv("ROUTER_STRICT_RAG", "1").lower() not in ("0","false","no"))
 ANSWER_MIN_OVERLAP = float(os.getenv("ROUTER_ANSWER_MIN_OVERLAP", "0.12"))
@@ -629,6 +630,13 @@ async def chat(req: ChatReq):
     if qa_json:
         ctx_text = "\n\n".join(extract_texts(qa_items))[:MAX_CTX_CHARS]
         ctx_text = mark_lonely_numbers_as_total(ctx_text)
+        if not file_hint:
+            for it in qa_items or []:
+                meta = it.get("metadata") or {}
+                src = str(it.get("source") or meta.get("source") or "")
+                if _LOCAL_SRC_RE.search(src):
+                    file_hint = True
+                    break
     # [CHANGE] 길이(80자) 허용 삭제 → 관련도/컨텍스트 품질만
     qa_ok = bool(ctx_text.strip()) and (
         file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text)
