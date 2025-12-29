@@ -12,6 +12,7 @@ services:
       DISABLE_INTERNAL_MCP: "${DISABLE_INTERNAL_MCP:-0}"
       INDEX_DIR: "/app/faiss_index"
       UPLOAD_DIR: "/app/uploads"
+      SINGLE_SOURCE_COALESCE: "0"
       HF_HOME: /cache/hf
       TRANSFORMERS_CACHE: /cache/hf/transformers
       HF_HUB_ENABLE_HF_TRANSFER: "1"
