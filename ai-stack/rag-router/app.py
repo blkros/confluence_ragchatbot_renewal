@@ -566,6 +566,16 @@ def build_force_context_prompt(ctx_text: str) -> str:
         "[컨텍스트 끝]\n"
     )
 
+def _fallback_summary_from_ctx(ctx_text: str, max_chars: int = 1200) -> str:
+    # Strip source tags and keep a short, readable excerpt as last resort.
+    text = re.sub(r"\[SOURCE:[^\]]+\]\s*", "", ctx_text or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "..."
+
 def _replace_last_user(messages: list[dict], content: str) -> list[dict]:
     if not messages:
         return messages
@@ -1339,9 +1349,7 @@ async def chat(req: ChatReq):
     cleaned = clean_llm_output(raw)
     if ROUTER_DEBUG and not cleaned and raw:
         _dbg(f"query_clean_empty: raw_prefix={repr(raw[:200])}")
-    if ROUTER_DEBUG:
-        _dbg(f"query_answer: raw_len={len(raw)} cleaned_len={len(cleaned)} ctx_len={len(full_ctx_for_check)}")
-    if cleaned.strip() == "인덱스에 근거 없음" and full_ctx_for_check:
+    if cleaned.strip() == "?????? ??? ???" and full_ctx_for_check:
         try:
             _dbg("query_force_context_retry")
             payload["messages"] = [{"role":"system","content":build_force_context_prompt(ctx_for_prompt)}] + [{"role":"user","content": clean_user_msg}]
@@ -1351,7 +1359,25 @@ async def chat(req: ChatReq):
             cleaned = clean_llm_output(raw)
         except Exception:
             pass
-    content = sanitize(cleaned) or "인덱스에 근거 없음"
+        if ROUTER_DEBUG:
+            _dbg(f"query_force_context_result: raw_len={len(raw)} cleaned_len={len(cleaned)}")
+    if cleaned.strip() == "???? ?? ??" and full_ctx_for_check:
+        try:
+            _dbg("query_force_context_retry")
+            payload["messages"] = [{"role":"system","content":build_force_context_prompt(ctx_for_prompt)}] + [{"role":"user","content": clean_user_msg}]
+            r3 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            rj3 = r3.json()
+            raw = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+            cleaned = clean_llm_output(raw)
+        except Exception:
+            pass
+        if ROUTER_DEBUG:
+            _dbg(f"query_force_context_result: raw_len={len(raw)} cleaned_len={len(cleaned)}")
+        if cleaned.strip() == "???? ?? ??" and full_ctx_for_check:
+            fallback = _fallback_summary_from_ctx(ctx_for_prompt)
+            if fallback:
+                cleaned = fallback
+    content = sanitize(cleaned) or "???? ?? ??"
     if not file_hint and best_ctx and _LOCAL_SRC_RE.search(best_ctx):
         file_hint = True
 
