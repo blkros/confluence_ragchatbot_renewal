@@ -105,6 +105,12 @@ services:
       - app-net
     restart: unless-stopped
     volumes:
+      - type: bind
+        source: /opt/confluence-chatbot-renewal/storage/open-webui-data
+        target: /data
+        read_only: true
+        bind:
+          create_host_path: true
       - "${STORAGE_ROOT}/open-webui-data:/app/backend/data"
 
   webui-to-rag-bridge:

@@ -13,3 +13,4 @@
 - `ROUTER_INGEST_WAIT_SEC` (default: 8)
 - `ROUTER_INGEST_WAIT_INTERVAL` (default: 1.0)
 - `ROUTER_KO_MORPH=1` to enable Korean morphological tokenization (requires kiwipiepy)
+- `ROUTER_UPLOADS_DIR` (default: /data/uploads)

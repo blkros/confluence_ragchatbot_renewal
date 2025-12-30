@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Optional
+from pathlib import Path
 import os, httpx, time, uuid, re, math, unicodedata, asyncio
 from html import unescape
 from datetime import datetime
@@ -52,6 +53,7 @@ ROUTER_DEBUG = (os.getenv("ROUTER_DEBUG", "0").lower() not in ("0","false","no")
 ROUTER_QA_MIN_CTX_LEN = int(os.getenv("ROUTER_QA_MIN_CTX_LEN", "120"))
 ROUTER_INGEST_WAIT_SEC = float(os.getenv("ROUTER_INGEST_WAIT_SEC", "8"))
 ROUTER_INGEST_WAIT_INTERVAL = float(os.getenv("ROUTER_INGEST_WAIT_INTERVAL", "1.0"))
+ROUTER_UPLOADS_DIR = os.getenv("ROUTER_UPLOADS_DIR", "/data/uploads")
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]{2,}")
@@ -302,6 +304,20 @@ def _ctx_ready_for_file(items: list[dict], ctx: str) -> bool:
         if kind and kind not in ("title", "summary"):
             return True
     return False
+
+def _latest_upload_source() -> str:
+    try:
+        base = Path(ROUTER_UPLOADS_DIR)
+    except Exception:
+        return ""
+    if not base.exists() or not base.is_dir():
+        return ""
+    exts = {".pdf", ".pptx", ".ppt", ".xlsx", ".xls", ".csv", ".txt", ".md", ".log", ".docx"}
+    files = [p for p in base.iterdir() if p.is_file() and p.suffix.lower() in exts]
+    if not files:
+        return ""
+    latest = max(files, key=lambda p: p.stat().st_mtime)
+    return f"/app/uploads/{latest.name}"
 
 async def _query_with_wait(
     client: httpx.AsyncClient,
@@ -1113,6 +1129,27 @@ async def chat(req: ChatReq):
                             is_relevant(used_q_for_relevance or orig_user_msg, best_ctx)):
             best_ctx = ""
             src_urls = []
+
+    if not best_ctx and file_hint:
+        latest_src = _latest_upload_source()
+        if latest_src:
+            try:
+                payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": latest_src}
+                async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+                    j_latest = await _query_with_wait(client, payload, file_hint)
+                items_latest = (j_latest.get("items") or j_latest.get("contexts") or [])
+                ctx_list_latest = (j_latest.get("context_texts")
+                                   or [c.get("text","") for c in (j_latest.get("contexts") or [])]
+                                   or [it.get("text","") for it in (j_latest.get("items") or [])])
+                if items_latest:
+                    ctx_list_latest = extract_texts(items_latest)
+                ctx_latest = "\n\n---\n\n".join([t for t in ctx_list_latest if t])[:MAX_CTX_CHARS]
+                if _ctx_ready_for_file(items_latest, ctx_latest):
+                    best_ctx = ctx_latest
+                    src_urls = []
+                    _dbg(f"query_latest_source: src='{latest_src}' ctx_len={len(best_ctx)} items={len(items_latest)}")
+            except Exception:
+                pass
 
     if not best_ctx:
         # 스페이스 힌트 있으면 기존 STRICT 응답, 없으면 일반 LLM 직답
