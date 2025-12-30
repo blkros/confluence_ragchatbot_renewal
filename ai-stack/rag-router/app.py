@@ -1164,7 +1164,7 @@ async def chat(req: ChatReq):
             best_ctx = ""
             src_urls = []
 
-    if not best_ctx and not file_hint:
+    if (not file_hint) and (not best_ctx or len(best_ctx) < ROUTER_QA_MIN_CTX_LEN):
         inferred_src = _match_upload_source_by_query(clean_user_msg)
         if inferred_src:
             try:
@@ -1181,7 +1181,7 @@ async def chat(req: ChatReq):
                     ctx_list_inf = extract_texts(items_inf)
                 ctx_inf = "\n\n---\n\n".join([t for t in ctx_list_inf if t])[:MAX_CTX_CHARS]
                 _dbg(f"query_infer_source_resp: items={len(items_inf)} ctx_len={len(ctx_inf)}")
-                if items_inf and ctx_inf:
+                if items_inf and ctx_inf and (not best_ctx or len(ctx_inf) > len(best_ctx)):
                     best_ctx = ctx_inf
                     src_urls = []
                     _dbg(f"query_infer_source: src='{inferred_src}' ctx_len={len(best_ctx)} items={len(items_inf)}")
