@@ -1309,6 +1309,13 @@ async def chat(req: ChatReq):
             raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             if ROUTER_DEBUG and not raw:
                 _dbg(f"query_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
+            if raw.strip() == "인덱스에 근거 없음":
+                _dbg("query_retry_due_to_basis_none")
+                short_ctx = ctx_for_prompt[:2000]
+                payload["messages"] = [{"role":"system","content":build_final_only_prompt(short_ctx)}] + [{"role":"user","content": clean_user_msg}]
+                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                rj2 = r2.json()
+                raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             if not raw:
                 short_ctx = ctx_for_prompt[:2000]
                 payload["messages"] = [{"role":"system","content":build_final_only_prompt(short_ctx)}] + [{"role":"user","content": clean_user_msg}]
@@ -1322,6 +1329,8 @@ async def chat(req: ChatReq):
     cleaned = clean_llm_output(raw)
     if ROUTER_DEBUG and not cleaned and raw:
         _dbg(f"query_clean_empty: raw_prefix={repr(raw[:200])}")
+    if ROUTER_DEBUG:
+        _dbg(f"query_answer: raw_len={len(raw)} cleaned_len={len(cleaned)} ctx_len={len(full_ctx_for_check)}")
     content = sanitize(cleaned) or "인덱스에 근거 없음"
     if not file_hint and best_ctx and _LOCAL_SRC_RE.search(best_ctx):
         file_hint = True
