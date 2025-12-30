@@ -319,6 +319,12 @@ def _latest_upload_source() -> str:
     latest = max(files, key=lambda p: p.stat().st_mtime)
     return f"/app/uploads/{latest.name}"
 
+def _file_stem_for_query(src: str) -> str:
+    name = Path(str(src)).name
+    # Strip UUID prefix like "<uuid>_filename.ext"
+    name = re.sub(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_", "", name, flags=re.I)
+    return Path(name).stem
+
 async def _query_with_wait(
     client: httpx.AsyncClient,
     payload: dict,
@@ -1134,7 +1140,9 @@ async def chat(req: ChatReq):
         latest_src = _latest_upload_source()
         if latest_src:
             try:
-                payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": latest_src}
+                fallback_q = _file_stem_for_query(latest_src) or clean_user_msg
+                _dbg(f"query_latest_source_try: src='{latest_src}' q='{fallback_q}'")
+                payload = {"question": fallback_q, "k": 10, "sticky": False, "need_fallback": False, "source": latest_src}
                 async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
                     j_latest = await _query_with_wait(client, payload, file_hint)
                 items_latest = (j_latest.get("items") or j_latest.get("contexts") or [])
@@ -1144,7 +1152,8 @@ async def chat(req: ChatReq):
                 if items_latest:
                     ctx_list_latest = extract_texts(items_latest)
                 ctx_latest = "\n\n---\n\n".join([t for t in ctx_list_latest if t])[:MAX_CTX_CHARS]
-                if _ctx_ready_for_file(items_latest, ctx_latest):
+                _dbg(f"query_latest_source_resp: items={len(items_latest)} ctx_len={len(ctx_latest)}")
+                if items_latest and (ctx_latest or _ctx_ready_for_file(items_latest, ctx_latest)):
                     best_ctx = ctx_latest
                     src_urls = []
                     _dbg(f"query_latest_source: src='{latest_src}' ctx_len={len(best_ctx)} items={len(items_latest)}")
