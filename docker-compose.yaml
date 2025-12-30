@@ -116,7 +116,7 @@ services:
     environment:
       RAG_PROXY: "http://rag-proxy:8080"
       WATCH_DIR: "/data/uploads"
-      EXT_FILTER: "pdf,pptx,xlsx,txt,csv,md"
+      EXT_FILTER: "pdf,pptx,docx,xlsx,txt,csv,md"
       POLL_SEC: "2"
       PYTHONUNBUFFERED: "1"
     networks:

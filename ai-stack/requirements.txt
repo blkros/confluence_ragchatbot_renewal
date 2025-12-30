@@ -15,6 +15,7 @@ beautifulsoup4
 lxml
 pypdf
 python-pptx
+python-docx
 openpyxl==3.1.5
 chardet
 pandas==2.3.2

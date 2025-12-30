@@ -179,6 +179,50 @@ def load_txt(path: Path) -> List[Document]:
     return [Document(page_content=text, metadata={"source": str(path), "type": "txt"})]
 
 # -----------------------------
+# DOCX
+# -----------------------------
+def load_docx(path: Path) -> List[Document]:
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument(str(path))
+    docs: List[Document] = []
+    first_lines: list[str] = []
+
+    for p in doc.paragraphs:
+        text = (p.text or "").strip()
+        if not text:
+            continue
+        if not first_lines:
+            first_lines.append(text)
+        docs.append(Document(page_content=text, metadata={
+            "source": str(path), "type": "docx", "kind": "paragraph"
+        }))
+
+    for t_i, table in enumerate(doc.tables, start=1):
+        headers = None
+        for r_i, row in enumerate(table.rows):
+            cells = [(c.text or "").strip() for c in row.cells]
+            if r_i == 0:
+                headers = cells
+                continue
+            pairs = [f"{h}={v}" for h, v in zip(headers or [], cells) if (h or "").strip() and (v or "").strip()]
+            line = "; ".join(pairs) if pairs else "\t".join(cells)
+            if line.strip():
+                docs.append(Document(page_content=line, metadata={
+                    "source": str(path), "type": "docx", "kind": "table_row",
+                    "table": t_i, "row": r_i
+                }))
+
+    if docs:
+        title = first_lines[0] if first_lines else path.stem
+        docs.insert(0, Document(page_content=f"[TITLE] {title}", metadata={"source": str(path), "kind": "title"}))
+        head = " ".join(first_lines[:4]).strip()
+        if head:
+            docs.insert(1, Document(page_content=f"[SUMMARY] {path.name} 개요: {head}", metadata={"source": str(path), "kind": "summary"}))
+
+    return docs
+
+# -----------------------------
 # PDF (기본 텍스트 파서)
 # -----------------------------
 def load_pdf(path: Path) -> List[Document]:
@@ -699,7 +743,9 @@ def load_docs_any(
 
     if ext == ".hwp":
         raise ValueError("HWP는 지원하지 않습니다.")
-    if ext == ".pptx":
+    if ext == ".docx":
+        docs = load_docx(p)
+    elif ext == ".pptx":
         docs = load_pptx(p)
     elif ext == ".xlsx":
         docs = load_xlsx(p)

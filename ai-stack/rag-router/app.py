@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Optional
-import os, httpx, time, uuid, re, math, unicodedata
+import os, httpx, time, uuid, re, math, unicodedata, asyncio
 from html import unescape
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -16,7 +16,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "qwen3-30b-a3b-fp8")
 ROUTER_MODEL_ID = os.getenv("ROUTER_MODEL_ID", "qwen3-30b-a3b-fp8-router")
 TZ = os.getenv("ROUTER_TZ", "Asia/Seoul")
 _NUM_ONLY_LINE = re.compile(r'(?m)^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
-_FILE_HINT_RE = re.compile(r"(?:file|document|pdf|pptx|ppt|xlsx|excel|csv|sheet|slide|첨부|파일|문서|자료|엑셀|파워포인트|피피티)", re.I)
+_FILE_HINT_RE = re.compile(r"(?:file|document|docx|doc|word|pdf|pptx|ppt|xlsx|excel|csv|sheet|slide|첨부|파일|문서|자료|워드|엑셀|파워포인트|피피티)", re.I)
 _LOCAL_SRC_RE = re.compile(r"/uploads/|\\uploads\\", re.I)
 _CONF_HOST_RE = re.compile(r"https?://[^/]*confluence[^/]*", re.I)
 _CONTEXT_CUT_RE = re.compile(
@@ -50,6 +50,8 @@ ROUTER_SOURCES_MAX  = int(os.getenv("ROUTER_SOURCES_MAX", "5"))
 ROUTER_SHOW_CONTEXT_LABEL = (os.getenv("ROUTER_SHOW_CONTEXT_LABEL", "1").lower() not in ("0","false","no"))
 ROUTER_DEBUG = (os.getenv("ROUTER_DEBUG", "0").lower() not in ("0","false","no"))
 ROUTER_QA_MIN_CTX_LEN = int(os.getenv("ROUTER_QA_MIN_CTX_LEN", "120"))
+ROUTER_INGEST_WAIT_SEC = float(os.getenv("ROUTER_INGEST_WAIT_SEC", "8"))
+ROUTER_INGEST_WAIT_INTERVAL = float(os.getenv("ROUTER_INGEST_WAIT_INTERVAL", "1.0"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]{2,}")
@@ -80,6 +82,18 @@ _JOSA_RE = re.compile(
     r"(으로써|으로서|으로부터|라고는|라고도|라고|처럼|까지|부터|에게서|한테서|에게|한테|께|이며|이자|"
     r"으로|로서|로써|로부터|께서|와는|과는|에서는|에는|에서|에게|한테|와|과|을|를|은|는|이|가|의|에|도|만|랑|하고)$"
 )
+
+USE_KO_MORPH = (os.getenv("ROUTER_KO_MORPH", "0").lower() not in ("0","false","no"))
+try:
+    from kiwipiepy import Kiwi
+    _KIWI_OK = True
+except Exception:
+    Kiwi = None
+    _KIWI_OK = False
+
+@lru_cache
+def _get_kiwi():
+    return Kiwi() if _KIWI_OK else None
 
 ALLOWED_SOURCE_HOSTS = [h.strip().lower() for h in os.getenv("ALLOWED_SOURCE_HOSTS","").split(",") if h.strip()]
 
@@ -274,6 +288,46 @@ def _httpx_timeout():
         pool=ROUTER_POOL_TIMEOUT,
     )
 
+def _item_kind(it: dict) -> str:
+    md = it.get("metadata") or {}
+    return (md.get("kind") or it.get("kind") or "").strip()
+
+def _ctx_ready_for_file(items: list[dict], ctx: str) -> bool:
+    if not items:
+        return False
+    if len(ctx or "") >= ROUTER_QA_MIN_CTX_LEN:
+        return True
+    for it in items:
+        kind = _item_kind(it)
+        if kind and kind not in ("title", "summary"):
+            return True
+    return False
+
+async def _query_with_wait(
+    client: httpx.AsyncClient,
+    payload: dict,
+    file_hint: bool,
+) -> dict:
+    if not file_hint or ROUTER_INGEST_WAIT_SEC <= 0:
+        return (await client.post(f"{RAG}/query", json=payload)).json()
+
+    deadline = time.monotonic() + ROUTER_INGEST_WAIT_SEC
+    last = {}
+    while True:
+        last = (await client.post(f"{RAG}/query", json=payload)).json()
+        items = (last.get("items") or last.get("contexts") or [])
+        ctx_list = (last.get("context_texts")
+                    or [c.get("text","") for c in (last.get("contexts") or [])]
+                    or [it.get("text","") for it in (last.get("items") or [])])
+        if file_hint and items:
+            ctx_list = extract_texts(items)
+        ctx = "\n\n---\n\n".join([t for t in ctx_list if t])[:MAX_CTX_CHARS]
+        if _ctx_ready_for_file(items, ctx):
+            return last
+        if time.monotonic() >= deadline:
+            return last
+        await asyncio.sleep(ROUTER_INGEST_WAIT_INTERVAL)
+
 def _pick_max_tokens(req_max: Optional[int]) -> int:
     if req_max is None or req_max <= 0:
         return OUTPUT_TOKENS
@@ -340,6 +394,16 @@ async def _auto_pick_spaces(q: str, client: httpx.AsyncClient) -> list[str] | No
     return None
 
 def _tokens(s: str) -> list[str]:
+    if USE_KO_MORPH and _KIWI_OK:
+        kiwi = _get_kiwi()
+        toks = []
+        for t in kiwi.tokenize(s or ""):
+            if t.pos.startswith("J"):
+                continue
+            form = (t.form or "").strip().lower()
+            if form:
+                toks.append(form)
+        return toks
     toks = []
     for t in _KO_EN_TOKEN.findall(s or ""):
         t2 = _strip_josa(t).lower()
@@ -970,7 +1034,7 @@ async def chat(req: ChatReq):
                 payload1 = {"question": v, "k": 10, "sticky": False, "need_fallback": False}
                 if spaces_hint:
                     payload1["spaces"] = spaces_hint
-                j1 = (await client.post(f"{RAG}/query", json=payload1)).json()
+                j1 = await _query_with_wait(client, payload1, file_hint)
             except Exception:
                 j1 = {}
 
@@ -978,7 +1042,7 @@ async def chat(req: ChatReq):
                 payload2 = {"question": v, "k": 10, "sticky": True, "need_fallback": False}
                 if spaces_hint:
                     payload2["spaces"] = spaces_hint
-                j2 = (await client.post(f"{RAG}/query", json=payload2)).json()
+                j2 = await _query_with_wait(client, payload2, file_hint)
             except Exception:
                 j2 = {}
 
