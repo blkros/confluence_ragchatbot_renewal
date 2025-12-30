@@ -325,6 +325,34 @@ def _file_stem_for_query(src: str) -> str:
     name = re.sub(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_", "", name, flags=re.I)
     return Path(name).stem
 
+def _match_upload_source_by_query(q: str) -> str:
+    try:
+        base = Path(ROUTER_UPLOADS_DIR)
+    except Exception:
+        return ""
+    if not base.exists() or not base.is_dir():
+        return ""
+    q_norm = re.sub(r"\s+", "", _normalize_query(q).lower())
+    q_tokens = [t for t in _tokens(q) if t not in _STOPWORDS]
+    exts = {".pdf", ".pptx", ".ppt", ".xlsx", ".xls", ".csv", ".txt", ".md", ".log", ".docx"}
+    best = ("", 0)
+    for p in base.iterdir():
+        if not (p.is_file() and p.suffix.lower() in exts):
+            continue
+        stem = _file_stem_for_query(p.name).lower()
+        stem_norm = re.sub(r"\s+", "", _normalize_query(stem))
+        score = 0
+        if q_norm and q_norm in stem_norm:
+            score = max(score, 5)
+        for t in q_tokens:
+            if t and t in stem_norm:
+                score += 1
+        if score > best[1]:
+            best = (p.name, score)
+    if best[0] and best[1] > 0:
+        return f"/app/uploads/{best[0]}"
+    return ""
+
 async def _query_with_wait(
     client: httpx.AsyncClient,
     payload: dict,
@@ -1135,6 +1163,30 @@ async def chat(req: ChatReq):
                             is_relevant(used_q_for_relevance or orig_user_msg, best_ctx)):
             best_ctx = ""
             src_urls = []
+
+    if not best_ctx and not file_hint:
+        inferred_src = _match_upload_source_by_query(clean_user_msg)
+        if inferred_src:
+            try:
+                _dbg(f"query_infer_source_try: src='{inferred_src}' q='{clean_user_msg}'")
+                payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": inferred_src}
+                async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+                    j_inf = await client.post(f"{RAG}/query", json=payload)
+                j_inf = j_inf.json() if hasattr(j_inf, "json") else {}
+                items_inf = (j_inf.get("items") or j_inf.get("contexts") or [])
+                ctx_list_inf = (j_inf.get("context_texts")
+                                or [c.get("text","") for c in (j_inf.get("contexts") or [])]
+                                or [it.get("text","") for it in (j_inf.get("items") or [])])
+                if items_inf:
+                    ctx_list_inf = extract_texts(items_inf)
+                ctx_inf = "\n\n---\n\n".join([t for t in ctx_list_inf if t])[:MAX_CTX_CHARS]
+                _dbg(f"query_infer_source_resp: items={len(items_inf)} ctx_len={len(ctx_inf)}")
+                if items_inf and ctx_inf:
+                    best_ctx = ctx_inf
+                    src_urls = []
+                    _dbg(f"query_infer_source: src='{inferred_src}' ctx_len={len(best_ctx)} items={len(items_inf)}")
+            except Exception:
+                pass
 
     if not best_ctx and file_hint:
         latest_src = _latest_upload_source()
