@@ -1147,7 +1147,7 @@ async def chat(req: ChatReq):
                     src = _get_item_source(top)
                     if top_kind == "title" and src:
                         try:
-                            payload_src = {"question": v, "k": 20, "sticky": False, "need_fallback": False, "source": src}
+                            payload_src = {"question": _file_stem_for_query(src) or v, "k": 50, "sticky": False, "need_fallback": False, "source": src}
                             j_src = (await client.post(f"{RAG}/query", json=payload_src)).json()
                             items2 = (j_src.get("items") or j_src.get("contexts") or [])
                             urls2  = _limit_urls(j_src.get("source_urls")) if j_src.get("source_urls") else _collect_urls_from_items(items2)
