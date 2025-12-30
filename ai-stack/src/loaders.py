@@ -1,6 +1,7 @@
 # src/loaders.py
 from __future__ import annotations
 from pathlib import Path
+from io import BytesIO
 from typing import List, Union
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -9,6 +10,7 @@ import os, csv
 import chardet
 from pypdf import PdfReader
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 import openpyxl
 from src.config import settings
 
@@ -43,6 +45,9 @@ import re
 DEFAULT_OCR_LANG = "kor+eng"
 DEFAULT_OCR_DPI = 300
 AUTO_OCR_MIN_CHARS = 80   # auto 경로에서 텍스트가 이 값보다 작으면 OCR 폴백
+PPTX_OCR = os.getenv("PPTX_OCR", "0").lower() not in ("0","false","no")
+XLSX_MAX_ROWS = int(os.getenv("XLSX_MAX_ROWS_PER_SHEET", "2000"))
+XLSX_MAX_COLS = int(os.getenv("XLSX_MAX_COLS", "50"))
 
 # === Universal heading detection (범용 헤더 스플리터) ===
 HEADING_RES = [
@@ -190,11 +195,50 @@ def load_pdf(path: Path) -> List[Document]:
 # -----------------------------
 # PPTX
 # -----------------------------
+def _pptx_slide_title(slide) -> str:
+    for shp in slide.shapes:
+        if getattr(shp, "has_text_frame", False) and shp.text_frame:
+            for p in shp.text_frame.paragraphs:
+                t = (p.text or "").strip()
+                if t:
+                    return t
+    return ""
+
+def _pptx_notes_text(slide) -> str:
+    try:
+        if slide.has_notes_slide and slide.notes_slide and slide.notes_slide.notes_text_frame:
+            return (slide.notes_slide.notes_text_frame.text or "").strip()
+    except Exception:
+        return ""
+    return ""
+
+def _pptx_ocr_image(shape) -> str:
+    if not (PPTX_OCR and _TESSERACT_OK):
+        return ""
+    try:
+        if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
+            return ""
+        blob = shape.image.blob
+        if not blob:
+            return ""
+        img = Image.open(BytesIO(blob))
+        return _ocr_page(img, lang=DEFAULT_OCR_LANG)
+    except Exception:
+        return ""
+
 def load_pptx(path: Path) -> List[Document]:
     prs = Presentation(str(path))
     docs: List[Document] = []
+    first_lines: list[str] = []
+
     for i, slide in enumerate(prs.slides, start=1):
         lines = []
+        title = _pptx_slide_title(slide)
+        if title:
+            lines.append(f"[SLIDE {i}] {title}")
+            if not first_lines:
+                first_lines.append(title)
+
         for shp in slide.shapes:
             if getattr(shp, "has_text_frame", False) and shp.text_frame:
                 for p in shp.text_frame.paragraphs:
@@ -204,14 +248,41 @@ def load_pptx(path: Path) -> List[Document]:
                         lines.append(p.text or "")
             if getattr(shp, "has_table", False):
                 tbl = shp.table
-                for row in tbl.rows:
+                headers = None
+                for r_i, row in enumerate(tbl.rows):
                     cells = [(c.text or "").strip() for c in row.cells]
-                    lines.append("\t".join(cells))
+                    if r_i == 0:
+                        headers = cells
+                        continue
+                    if headers:
+                        pairs = [f"{h}={v}" for h, v in zip(headers, cells) if (h or "").strip() and (v or "").strip()]
+                        if pairs:
+                            lines.append("; ".join(pairs))
+                        else:
+                            lines.append("\t".join(cells))
+                    else:
+                        lines.append("\t".join(cells))
+            ocr_text = _pptx_ocr_image(shp)
+            if ocr_text:
+                lines.append(f"[OCR] {ocr_text}")
+
+        notes = _pptx_notes_text(slide)
+        if notes:
+            lines.append(f"[NOTES] {notes}")
+
         text = "\n".join([ln for ln in lines if ln.strip()])
         if text.strip():
             docs.append(Document(page_content=text, metadata={
-                "source": str(path), "type": "pptx", "slide": i
+                "source": str(path), "type": "pptx", "slide": i, "kind": "slide_text"
             }))
+
+    if docs:
+        title = first_lines[0] if first_lines else path.stem
+        docs.insert(0, Document(page_content=f"[TITLE] {title}", metadata={"source": str(path), "kind": "title"}))
+        head = " ".join(first_lines[:4]).strip()
+        if head:
+            docs.insert(1, Document(page_content=f"[SUMMARY] {path.name} 개요: {head}", metadata={"source": str(path), "kind": "summary"}))
+
     return docs
 
 # -----------------------------
@@ -221,16 +292,32 @@ def load_xlsx(path: Path) -> List[Document]:
     wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
     docs: List[Document] = []
     for ws in wb.worksheets:
-        lines = []
-        for row in ws.iter_rows(values_only=True):
-            line = "\t".join("" if v is None else str(v) for v in row)
+        header = None
+        row_count = 0
+        for r_i, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            if row_count >= XLSX_MAX_ROWS:
+                break
+            vals = ["" if v is None else str(v) for v in row[:XLSX_MAX_COLS]]
+            if not any(v.strip() for v in vals):
+                continue
+            if header is None:
+                header = vals
+                continue
+            pairs = [f"{h}={v}" for h, v in zip(header, vals) if (h or "").strip() and (v or "").strip()]
+            line = "; ".join(pairs) if pairs else "\t".join(vals)
             if line.strip():
-                lines.append(line)
-        text = "\n".join(lines)
-        if text.strip():
-            docs.append(Document(page_content=text, metadata={
-                "source": str(path), "type": "xlsx", "sheet": ws.title
-            }))
+                docs.append(Document(page_content=line, metadata={
+                    "source": str(path), "type": "xlsx", "sheet": ws.title, "row": r_i, "kind": "row"
+                }))
+                row_count += 1
+
+        if header:
+            docs.append(Document(
+                page_content=f"[SUMMARY] {path.name} / {ws.title} 헤더: " + "; ".join([h for h in header if h.strip()][:20]),
+                metadata={"source": str(path), "kind": "summary", "sheet": ws.title}
+            ))
+    if docs:
+        docs.insert(0, Document(page_content=f"[TITLE] {path.stem}", metadata={"source": str(path), "kind": "title"}))
     return docs
 
 # -----------------------------

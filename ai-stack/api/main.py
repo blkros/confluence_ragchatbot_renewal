@@ -63,13 +63,14 @@ META_PAT  = re.compile(r"(주제|개요|요약|무엇|무슨\s*내용)", re.I)
 TITLE_PAT = re.compile(r"(제목|title|문서명|파일명)", re.I)
 LOGIN_PAT = re.compile(r"(Confluence에\s*로그인|로그인\s*-\s*Confluence|name=[\"']os_username[\"'])", re.I)
 THIS_FILE_PAT = re.compile(
-    r"(이\s*(?:pdf|엑셀|hwp|한글|워드|ppt|파워포인트)?\s*(?:파일|문서|자료)|"
-    r"해당\s*(?:파일|문서|자료|pdf)|"
-    r"첨부(?:한)?\s*(?:파일|문서|자료|pdf)|"
-    r"방금\s*(?:올린|업로드한)\s*(?:파일|문서|자료|pdf)|"
+    r"(이\s*(?:pdf|엑셀|xlsx|csv|txt|md|hwp|한글|워드|ppt|pptx|파워포인트)?\s*(?:파일|문서|자료)|"
+    r"해당\s*(?:파일|문서|자료|pdf|엑셀|pptx|csv|txt|md)|"
+    r"첨부(?:한)?\s*(?:파일|문서|자료|pdf|엑셀|pptx|csv|txt|md)|"
+    r"방금\s*(?:올린|업로드한)\s*(?:파일|문서|자료|pdf|엑셀|pptx|csv|txt|md)|"
     r"위\s*(?:파일|문서|자료))",
     re.I
 )
+_FILE_EXT_RE = re.compile(r"\.(pdf|pptx|ppt|xlsx|xls|csv|txt|md)($|\?)", re.I)
 _CHAPTER_RE = re.compile(r"제\s*(\d+)\s*장")
 _ARTICLE_RE = re.compile(r"제\s*(\d+)\s*조")
 
@@ -541,7 +542,7 @@ def _is_pdf_related_response(r: dict) -> bool:
     def _meta_is_pdf(md: dict) -> bool:
         mime = (md or {}).get("mimetype") or (md or {}).get("mime") or (md or {}).get("content_type") or ""
         src  = (md or {}).get("source") or (md or {}).get("url") or ""
-        return _is_pdf_mime(mime) or bool(_PDF_EXT_RE.search(str(src)))
+        return _is_pdf_mime(mime) or bool(_FILE_EXT_RE.search(str(src)))
 
     # items / contexts 에서 로컬 업로드나 PDF 형태가 섞였는지 확인
     for coll in (r.get("items") or [], r.get("contexts") or []):
@@ -559,7 +560,7 @@ def _is_pdf_related_response(r: dict) -> bool:
 
     # source_urls 에 PDF/업로드 흔적이 있으면 역시 PDF 관련으로 간주
     for u in (r.get("source_urls") or []):
-        if _looks_blocked_source(u) or _PDF_EXT_RE.search(str(u)):
+        if _looks_blocked_source(u) or _FILE_EXT_RE.search(str(u)):
             return True
 
     return False
@@ -1258,7 +1259,7 @@ def build_openai_messages(question: str, k: int = 5) -> Tuple[List[Dict[str, Any
             docs = []
 
     # 3) 질문에 파일명 힌트가 있으면 같은 파일 청크 우선
-    m = re.search(r'([^\s"\'()]+\.pdf)', question, re.I)
+    m = re.search(r'([^\s"\'()]+\.(?:pdf|pptx|ppt|xlsx|xls|csv|txt|md))', question, re.I)
     fname = m.group(1).lower() if m else None
     if fname and docs:
         filt = [d for d in docs if fname in str(d.metadata.get("source","")).lower()]
@@ -1942,7 +1943,7 @@ async def query(payload: dict = Body(...)):
             docs = []
 
     # 파일명 힌트 → 동일 소스 우선
-    m = re.search(r'([^\s"\'()]+\.pdf)', q, re.I)
+    m = re.search(r'([^\s"\'()]+\.(?:pdf|pptx|ppt|xlsx|xls|csv|txt|md))', q, re.I)
     fname = m.group(1).lower() if m else None
     if fname:
         bn = Path(fname).name.lower()
@@ -2401,7 +2402,7 @@ async def query(payload: dict = Body(...)):
             try:
                 if mcp_results and (mcp_results[0].get("url") or mcp_results[0].get("id")):
                     want_sticky = False
-                    if forced_page_id or THIS_FILE_PAT.search(q) or re.search(r'([^\s"\'()]+\.pdf)', q, re.I):
+                    if forced_page_id or THIS_FILE_PAT.search(q) or re.search(r'([^\s"\'()]+\.(?:pdf|pptx|ppt|xlsx|xls|csv|txt|md))', q, re.I):
                         want_sticky = True
                     if STICKY_AFTER_MCP and want_sticky:
                         try:
@@ -2743,7 +2744,7 @@ async def v1_chat(payload: dict = Body(...)):
 
         sources_for_strip = r.get("source_urls") or []
         # 로컬 업로드/PDF 맥락이면 'auto' 모드 트리거를 위해 업로드 형태를 주입
-        if notes.get("had_pdf_ctx") or _is_pdf_related_response(r) or THIS_FILE_PAT.search(q) or _PDF_EXT_RE.search(q):
+        if notes.get("had_pdf_ctx") or _is_pdf_related_response(r) or THIS_FILE_PAT.search(q) or _FILE_EXT_RE.search(q):
             sources_for_strip = ["uploads/__local__.pdf"]
 
         content = _maybe_strip_citations(content, q, sources_for_strip)
