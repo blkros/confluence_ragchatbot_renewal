@@ -32,6 +32,8 @@ services:
     build:
       context: ./ai-stack/rag-router
       dockerfile: Dockerfile
+    env_file:
+      - ./ai-stack/.env
     environment:
       RAG_PROXY_URL: "http://rag-proxy:8080"
       OPENAI_URL: "${OPENAI_BASE_URL}"
@@ -62,6 +64,8 @@ services:
     ports:
       - "8088:8000"
     restart: unless-stopped
+    volumes:
+      - "${STORAGE_ROOT}/open-webui-data:/data:ro"
 
   mcp-confluence:
     container_name: mcp-confluence
