@@ -392,6 +392,30 @@ async def _resolve_source_from_index(client: httpx.AsyncClient, src: str) -> str
     candidates.sort(key=lambda v: len(v))
     return candidates[0]
 
+async def _query_source_with_terms(
+    client: httpx.AsyncClient,
+    src: str,
+    terms: list[str],
+    k: int = 10,
+) -> tuple[list[dict], str]:
+    for term in terms:
+        if not term:
+            continue
+        payload = {"question": term, "k": k, "sticky": False, "need_fallback": False, "source": src}
+        r = await client.post(f"{RAG}/query", json=payload)
+        j = r.json() if hasattr(r, "json") else {}
+        items = (j.get("items") or j.get("contexts") or [])
+        if not items:
+            continue
+        ctx_list = (j.get("context_texts")
+                    or [c.get("text","") for c in (j.get("contexts") or [])]
+                    or [it.get("text","") for it in (j.get("items") or [])])
+        ctx_list = extract_texts(items)
+        ctx = "\n\n---\n\n".join([t for t in ctx_list if t])[:MAX_CTX_CHARS]
+        if ctx:
+            return items, ctx
+    return [], ""
+
 async def _query_with_wait(
     client: httpx.AsyncClient,
     payload: dict,
@@ -1250,9 +1274,9 @@ async def chat(req: ChatReq):
                     resolved_src = await _resolve_source_from_index(client, history_src)
                     if resolved_src != history_src:
                         _dbg(f"query_history_source_resolve: src='{history_src}' -> '{resolved_src}'")
-                    _dbg(f"query_history_source_try: src='{resolved_src}' q='{clean_user_msg}'")
-                    payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": resolved_src}
-                    j_hist = await client.post(f"{RAG}/query", json=payload)
+                _dbg(f"query_history_source_try: src='{resolved_src}' q='{clean_user_msg}'")
+                payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": resolved_src}
+                j_hist = await client.post(f"{RAG}/query", json=payload)
                 j_hist = j_hist.json() if hasattr(j_hist, "json") else {}
                 items_hist = (j_hist.get("items") or j_hist.get("contexts") or [])
                 ctx_list_hist = (j_hist.get("context_texts")
@@ -1262,6 +1286,24 @@ async def chat(req: ChatReq):
                     ctx_list_hist = extract_texts(items_hist)
                 ctx_hist = "\n\n---\n\n".join([t for t in ctx_list_hist if t])[:MAX_CTX_CHARS]
                 _dbg(f"query_history_source_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
+                if not items_hist:
+                    tokens = [t for t in _tokens(clean_user_msg) if t not in _STOPWORDS]
+                    extra = []
+                    if re.search(r"docker", clean_user_msg, re.I):
+                        extra.append("docker")
+                    if "도커" in clean_user_msg:
+                        extra.append("도커")
+                    terms = list(dict.fromkeys(extra + tokens))[:5]
+                    if terms:
+                        _dbg(f"query_history_source_terms: {terms}")
+                        items_hist, ctx_hist = await _query_source_with_terms(client, resolved_src, terms, k=20)
+                        _dbg(f"query_history_source_terms_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
+                if not items_hist:
+                    stem_q = _file_stem_for_query(resolved_src)
+                    if stem_q:
+                        _dbg(f"query_history_source_fallback: q='{stem_q}'")
+                        items_hist, ctx_hist = await _query_source_with_terms(client, resolved_src, [stem_q], k=30)
+                        _dbg(f"query_history_source_fallback_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
                 if items_hist and ctx_hist and (not best_ctx or len(ctx_hist) > len(best_ctx)):
                     best_ctx = ctx_hist
                     src_urls = []
