@@ -448,7 +448,8 @@ def _tokens(s: str) -> list[str]:
         kiwi = _get_kiwi()
         toks = []
         for t in kiwi.tokenize(s or ""):
-            if t.pos.startswith("J"):
+            pos = getattr(t, "pos", None) or getattr(t, "tag", "")
+            if pos and str(pos).startswith("J"):
                 continue
             form = (t.form or "").strip().lower()
             if form:
