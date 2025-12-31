@@ -368,6 +368,30 @@ def _history_upload_source(messages: list[dict]) -> str:
     hint = " ".join(texts[-3:])
     return _match_upload_source_by_query(hint)
 
+async def _resolve_source_from_index(client: httpx.AsyncClient, src: str) -> str:
+    try:
+        r = await client.get(f"{RAG}/index/sources")
+        j = r.json() if hasattr(r, "json") else {}
+        items = j.get("items") or []
+    except Exception:
+        return src
+    if not items:
+        return src
+    stem = _file_stem_for_query(src)
+    if not stem:
+        return src
+    candidates = []
+    for it in items:
+        s = str(it.get("source") or "")
+        if not s:
+            continue
+        if _file_stem_for_query(s) == stem:
+            candidates.append(s)
+    if not candidates:
+        return src
+    candidates.sort(key=lambda v: len(v))
+    return candidates[0]
+
 async def _query_with_wait(
     client: httpx.AsyncClient,
     payload: dict,
@@ -1222,9 +1246,12 @@ async def chat(req: ChatReq):
     if not best_ctx or len(best_ctx) < ROUTER_QA_MIN_CTX_LEN:
         if history_src:
             try:
-                _dbg(f"query_history_source_try: src='{history_src}' q='{clean_user_msg}'")
-                payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": history_src}
                 async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+                    resolved_src = await _resolve_source_from_index(client, history_src)
+                    if resolved_src != history_src:
+                        _dbg(f"query_history_source_resolve: src='{history_src}' -> '{resolved_src}'")
+                    _dbg(f"query_history_source_try: src='{resolved_src}' q='{clean_user_msg}'")
+                    payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": resolved_src}
                     j_hist = await client.post(f"{RAG}/query", json=payload)
                 j_hist = j_hist.json() if hasattr(j_hist, "json") else {}
                 items_hist = (j_hist.get("items") or j_hist.get("contexts") or [])
@@ -1239,7 +1266,7 @@ async def chat(req: ChatReq):
                     best_ctx = ctx_hist
                     src_urls = []
                     file_hint = True
-                    _dbg(f"query_history_source: src='{history_src}' ctx_len={len(best_ctx)} items={len(items_hist)}")
+                    _dbg(f"query_history_source: src='{resolved_src}' ctx_len={len(best_ctx)} items={len(items_hist)}")
             except Exception:
                 pass
         if file_hint and best_ctx:
