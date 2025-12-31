@@ -890,14 +890,11 @@ async def chat(req: ChatReq):
     variants = generate_query_variants(clean_user_msg)
     limited_msgs = await _limited_messages(req.messages)
     limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
-    history_src = ""
-    if not file_hint:
-        # limited_msgs can drop history; use raw req messages for source inference.
-        raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
-        history_src = _history_upload_source(raw_msgs[:-1])
-        if history_src:
-            file_hint = True
-            _dbg(f"history_source: src='{history_src}'")
+    # limited_msgs can drop history; use raw req messages for source inference.
+    raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
+    history_src = _history_upload_source(raw_msgs[:-1])
+    if history_src:
+        _dbg(f"history_source: src='{history_src}'")
     _dbg(f"req: user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
 
     # 메타 태스크면 RAG 건너뛰고 그대로 모델로 전달 (JSON 형식 보존)
@@ -1222,7 +1219,7 @@ async def chat(req: ChatReq):
             best_ctx = ""
             src_urls = []
 
-    if (not file_hint) and (not best_ctx or len(best_ctx) < ROUTER_QA_MIN_CTX_LEN):
+    if not best_ctx or len(best_ctx) < ROUTER_QA_MIN_CTX_LEN:
         if history_src:
             try:
                 _dbg(f"query_history_source_try: src='{history_src}' q='{clean_user_msg}'")
@@ -1241,9 +1238,13 @@ async def chat(req: ChatReq):
                 if items_hist and ctx_hist and (not best_ctx or len(ctx_hist) > len(best_ctx)):
                     best_ctx = ctx_hist
                     src_urls = []
+                    file_hint = True
                     _dbg(f"query_history_source: src='{history_src}' ctx_len={len(best_ctx)} items={len(items_hist)}")
             except Exception:
                 pass
+        if file_hint and best_ctx:
+            # already have context; no need to infer or fallback.
+            pass
         inferred_src = _match_upload_source_by_query(clean_user_msg)
         if inferred_src:
             try:
@@ -1267,7 +1268,7 @@ async def chat(req: ChatReq):
             except Exception:
                 pass
 
-    if not best_ctx and file_hint:
+    if not best_ctx and file_hint and not history_src:
         latest_src = _latest_upload_source()
         if latest_src:
             try:
