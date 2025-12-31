@@ -353,6 +353,21 @@ def _match_upload_source_by_query(q: str) -> str:
         return f"/app/uploads/{best[0]}"
     return ""
 
+def _history_upload_source(messages: list[dict]) -> str:
+    if not messages:
+        return ""
+    texts: list[str] = []
+    for m in messages:
+        if (m.get("role") or "") != "user":
+            continue
+        content = str(m.get("content") or "").strip()
+        if content:
+            texts.append(content)
+    if not texts:
+        return ""
+    hint = " ".join(texts[-3:])
+    return _match_upload_source_by_query(hint)
+
 async def _query_with_wait(
     client: httpx.AsyncClient,
     payload: dict,
@@ -875,6 +890,11 @@ async def chat(req: ChatReq):
     variants = generate_query_variants(clean_user_msg)
     limited_msgs = await _limited_messages(req.messages)
     limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
+    history_src = ""
+    if not file_hint:
+        history_src = _history_upload_source(limited_msgs[:-1])
+        if history_src:
+            _dbg(f"history_source: src='{history_src}'")
     _dbg(f"req: user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
 
     # 메타 태스크면 RAG 건너뛰고 그대로 모델로 전달 (JSON 형식 보존)
@@ -1068,6 +1088,20 @@ async def chat(req: ChatReq):
         cleaned = clean_llm_output(raw)
         if ROUTER_DEBUG and not cleaned and raw:
             _dbg(f"qa_clean_empty: raw_prefix={repr(raw[:200])}")
+        if cleaned.strip() == "인덱스에 근거 없음" and ctx_for_prompt:
+            try:
+                _dbg("qa_force_context_retry")
+                payload["messages"] = [{"role":"system","content":build_force_context_prompt(ctx_for_prompt)}] + [{"role":"user","content": clean_user_msg}]
+                r3 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                rj3 = r3.json()
+                raw = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                cleaned = clean_llm_output(raw)
+            except Exception:
+                pass
+            if cleaned.strip() == "인덱스에 근거 없음":
+                fallback = _fallback_summary_from_ctx(ctx_for_prompt)
+                if fallback:
+                    cleaned = fallback
         content = sanitize(cleaned) or "인덱스에 근거 없음"
         _dbg(f"qa_answer: raw_len={len(raw)} content_len={len(content)}")
 
@@ -1186,6 +1220,27 @@ async def chat(req: ChatReq):
             src_urls = []
 
     if (not file_hint) and (not best_ctx or len(best_ctx) < ROUTER_QA_MIN_CTX_LEN):
+        if history_src:
+            try:
+                _dbg(f"query_history_source_try: src='{history_src}' q='{clean_user_msg}'")
+                payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": history_src}
+                async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+                    j_hist = await client.post(f"{RAG}/query", json=payload)
+                j_hist = j_hist.json() if hasattr(j_hist, "json") else {}
+                items_hist = (j_hist.get("items") or j_hist.get("contexts") or [])
+                ctx_list_hist = (j_hist.get("context_texts")
+                                 or [c.get("text","") for c in (j_hist.get("contexts") or [])]
+                                 or [it.get("text","") for it in (j_hist.get("items") or [])])
+                if items_hist:
+                    ctx_list_hist = extract_texts(items_hist)
+                ctx_hist = "\n\n---\n\n".join([t for t in ctx_list_hist if t])[:MAX_CTX_CHARS]
+                _dbg(f"query_history_source_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
+                if items_hist and ctx_hist and (not best_ctx or len(ctx_hist) > len(best_ctx)):
+                    best_ctx = ctx_hist
+                    src_urls = []
+                    _dbg(f"query_history_source: src='{history_src}' ctx_len={len(best_ctx)} items={len(items_hist)}")
+            except Exception:
+                pass
         inferred_src = _match_upload_source_by_query(clean_user_msg)
         if inferred_src:
             try:
@@ -1350,6 +1405,20 @@ async def chat(req: ChatReq):
     cleaned = clean_llm_output(raw)
     if ROUTER_DEBUG and not cleaned and raw:
         _dbg(f"query_clean_empty: raw_prefix={repr(raw[:200])}")
+    if cleaned.strip() == "인덱스에 근거 없음" and full_ctx_for_check:
+        try:
+            _dbg("query_force_context_retry")
+            payload["messages"] = [{"role":"system","content":build_force_context_prompt(ctx_for_prompt)}] + [{"role":"user","content": clean_user_msg}]
+            r3 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            rj3 = r3.json()
+            raw = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+            cleaned = clean_llm_output(raw)
+        except Exception:
+            pass
+        if cleaned.strip() == "인덱스에 근거 없음":
+            fallback = _fallback_summary_from_ctx(ctx_for_prompt)
+            if fallback:
+                cleaned = fallback
     if cleaned.strip() == "?????? ??? ???" and full_ctx_for_check:
         try:
             _dbg("query_force_context_retry")
