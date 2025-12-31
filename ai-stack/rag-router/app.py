@@ -1289,11 +1289,13 @@ async def chat(req: ChatReq):
                 if not items_hist:
                     tokens = [t for t in _tokens(clean_user_msg) if t not in _STOPWORDS]
                     extra = []
-                    if re.search(r"docker", clean_user_msg, re.I):
+                    if re.search(r"docker", clean_user_msg, re.I) or re.search(r"docker", orig_user_msg, re.I):
                         extra.append("docker")
-                    if "도커" in clean_user_msg:
+                    if "도커" in clean_user_msg or "도커" in orig_user_msg:
                         extra.append("도커")
                     terms = list(dict.fromkeys(extra + tokens))[:5]
+                    if not terms and ROUTER_DEBUG:
+                        _dbg(f"query_history_source_terms: empty (msg={clean_user_msg!r})")
                     if terms:
                         _dbg(f"query_history_source_terms: {terms}")
                         items_hist, ctx_hist = await _query_source_with_terms(client, resolved_src, terms, k=20)
