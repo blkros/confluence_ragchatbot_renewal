@@ -892,8 +892,11 @@ async def chat(req: ChatReq):
     limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
     history_src = ""
     if not file_hint:
-        history_src = _history_upload_source(limited_msgs[:-1])
+        # limited_msgs can drop history; use raw req messages for source inference.
+        raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
+        history_src = _history_upload_source(raw_msgs[:-1])
         if history_src:
+            file_hint = True
             _dbg(f"history_source: src='{history_src}'")
     _dbg(f"req: user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
 
