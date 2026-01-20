@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Optional
 from pathlib import Path
-import os, httpx, time, uuid, re, math, unicodedata, asyncio
+import os, httpx, time, uuid, re, math, unicodedata, asyncio, json
 from html import unescape
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -17,11 +17,16 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "qwen3-30b-a3b-fp8")
 ROUTER_MODEL_ID = os.getenv("ROUTER_MODEL_ID", "qwen3-30b-a3b-fp8-router")
 TZ = os.getenv("ROUTER_TZ", "Asia/Seoul")
 _NUM_ONLY_LINE = re.compile(r'(?m)^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
-_FILE_HINT_RE = re.compile(r"(?:file|document|docx|doc|word|pdf|pptx|ppt|xlsx|excel|csv|sheet|slide|첨부|파일|문서|자료|워드|엑셀|파워포인트|피피티)", re.I)
+_FILE_HINT_RE = re.compile(
+    r"(?:file|document|docx|doc|word|pdf|pptx|ppt|xlsx|excel|csv|sheet|slide|"
+    r"\uCCA8\uBD80|\uD30C\uC77C|\uBB38\uC11C|\uC790\uB8CC|\uC5C5\uB85C\uB4DC|"
+    r"\uC5D1\uC140|\uD30C\uC6CC\uD3EC\uC778\uD2B8|\uD53C\uD53C\uD2F0)",
+    re.I,
+)
 _LOCAL_SRC_RE = re.compile(r"/uploads/|\\uploads\\", re.I)
 _CONF_HOST_RE = re.compile(r"https?://[^/]*confluence[^/]*", re.I)
 _CONTEXT_CUT_RE = re.compile(
-    r"\s*[-–—]{2,}\s*\[?context\]?\s*.*$|\s*[-–—]{2,}\s*\[?컨텍스트\]?\s*.*$",
+    r"\s*[-\u2013\u2014]{2,}\s*\[?context\]?\s*.*$|\s*[-\u2013\u2014]{2,}\s*\[?\uCEE8\uD14D\uC2A4\uD2B8\]?\s*.*$",
     re.I | re.S,
 )
 
@@ -35,11 +40,15 @@ BULLETS_MAX = int(os.getenv("ROUTER_BULLETS_MAX", "15"))
 MAX_CTX_CHARS = int(os.getenv("MAX_CTX_CHARS", "8000"))
 _BULLET_HINTS = os.getenv(
     "ROUTER_AUTO_BULLET_HINTS",
-    "정리 요약 항목 목록 리스트 불릿 bullet 체크리스트 장단점 비교 포인트 핵심 todo 해야할일"
+    "\uC694\uC57D \uBAA9\uCC28 \uBAA9\uB85D \uB9AC\uC2A4\uD2B8 \uBD88\uB9BF bullet "
+    "\uCCB4\uD06C\uB9AC\uC2A4\uD2B8 \uC7A5\uB2E8\uC810 \uBE44\uAD50 \uD655\uC778 "
+    "\uD575\uC2EC todo \uD574\uC57C\uD560\uC77C"
 ).split()
 _PARA_HINTS = os.getenv(
     "ROUTER_AUTO_PARA_HINTS",
-    "설명 자세히 알려줘 소개 무엇 뭐야 해줘 왜 어떻게 의미 정의 개요 한문단 문단 서술형"
+    "\uC124\uBA85 \uC5B4\uB5A4 \uC124\uBA85\uC774\uC57C \uC124\uBA85\uD574\uC918 "
+    "\uAC1C\uC694 \uBB34\uC5C7 \uBB50\uC57C \uBB50\uC9C0 \uD574\uC918 "
+    "\uC790\uC138\uD788 \uC5B4\uB5A4 \uC815\uC758 \uAC1C\uC694 \uBCF8\uBB38 \uBB38\uB2E8 \uC11C\uC220\uD615"
 ).split()
 
 # [추가] 제목 접두어 완전 비활성(기본 ""), 필요시 환경변수로 켜도 됨
@@ -56,239 +65,90 @@ ROUTER_INGEST_WAIT_INTERVAL = float(os.getenv("ROUTER_INGEST_WAIT_INTERVAL", "1.
 ROUTER_UPLOADS_DIR = os.getenv("ROUTER_UPLOADS_DIR", "/data/uploads")
 
 # === relevance gate ===
-_KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]{2,}")
+_KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
 
-SYNONYMS = {
-    "NIA": ["한국지능정보사회진흥원", "지능정보사회진흥원", "국가정보화진흥원"],
-    "상가정보": ["상권정보", "상권 분석", "상권", "상업용 부동산 정보", "상가 매물"]
+_BASE_SYNONYMS = {
+    "NIA": [
+        "\uAD6D\uAC00\uC9C0\uB2A5\uC815\uBCF4\uC0AC\uD68C\uC9C4\uD765\uC6D0",
+        "\uC9C0\uB2A5\uC815\uBCF4\uC0AC\uD68C\uC9C4\uD765\uC6D0",
+        "\uAD6D\uAC00\uC815\uBCF4\uC9C4\uD765\uC6D0",
+    ],
+    "\uD2B9\uD654\uC815\uBCF4": [
+        "\uD2B9\uAD8C\uC815\uBCF4",
+        "\uD2B9\uAD8C \uBD84\uC11D",
+        "\uD2B9\uAD8C",
+        "\uD2B9\uD654\uB9E4\uBB3C \uC815\uBCF4",
+        "\uD2B9\uD654 \uB9E4\uBB3C",
+    ],
 }
 
-ALIASES = {
-    "NIA": ["NIA", "한국지능정보사회진흥원", "지능정보사회진흥원", "국가정보화진흥원"]
+_BASE_ALIASES = {
+    "NIA": [
+        "NIA",
+        "\uAD6D\uAC00\uC9C0\uB2A5\uC815\uBCF4\uC0AC\uD68C\uC9C4\uD765\uC6D0",
+        "\uC9C0\uB2A5\uC815\uBCF4\uC0AC\uD68C\uC9C4\uD765\uC6D0",
+        "\uAD6D\uAC00\uC815\uBCF4\uC9C4\uD765\uC6D0",
+    ]
 }
+
+def _load_json_map(env_json: str, env_path: str) -> dict:
+    raw = os.getenv(env_json, "").strip()
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+    path = os.getenv(env_path, "").strip()
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _normalize_map(d: dict) -> dict:
+    out = {}
+    for k, v in (d or {}).items():
+        if isinstance(v, list):
+            out[str(k)] = [str(x) for x in v]
+        elif isinstance(v, str):
+            out[str(k)] = [v]
+        else:
+            out[str(k)] = [str(v)]
+    return out
+
+def _merge_map(base: dict, override: dict, merge: bool) -> dict:
+    if not override:
+        return base
+    if not merge:
+        return override
+    out = dict(base)
+    for k, v in override.items():
+        out[k] = sorted(set(out.get(k, []) + v))
+    return out
+
+_MERGE_SYNONYMS = os.getenv("ROUTER_SYNONYMS_MERGE", "1").lower() not in ("0", "false", "no")
+_MERGE_ALIASES = os.getenv("ROUTER_ALIASES_MERGE", "1").lower() not in ("0", "false", "no")
+
+_syn_raw = _normalize_map(_load_json_map("ROUTER_SYNONYMS_JSON", "ROUTER_SYNONYMS_PATH"))
+_alias_raw = _normalize_map(_load_json_map("ROUTER_ALIASES_JSON", "ROUTER_ALIASES_PATH"))
+SYNONYMS = _merge_map(_BASE_SYNONYMS, _syn_raw, _MERGE_SYNONYMS)
+ALIASES = _merge_map(_BASE_ALIASES, _alias_raw, _MERGE_ALIASES)
 
 # [PATCH] 쿼리 변형 제어용 플래그/상수 추가
 USE_SYNONYMS = (os.getenv("ROUTER_USE_SYNONYMS", "0").lower() not in ("0","false","no"))
 VARIANTS_MAX = int(os.getenv("ROUTER_VARIANTS_MAX", "4"))
 
 
-_STOPWORDS = set("은 는 이 가 을 를 에 의 와 과 도 로 으로 에서 에게 그리고 그러나 그래서 무엇 뭐야 뭐지 설명 해줘 대한 대해 정리 개요 소개 자세히".split())
-
-# ===== httpx timeout/env =====
-ROUTER_CONNECT_TIMEOUT = float(os.getenv("ROUTER_CONNECT_TIMEOUT", "20"))
-ROUTER_READ_TIMEOUT    = float(os.getenv("ROUTER_READ_TIMEOUT", "180"))  # <- 120 → 180로 여유
-ROUTER_WRITE_TIMEOUT   = float(os.getenv("ROUTER_WRITE_TIMEOUT", "60"))
-ROUTER_POOL_TIMEOUT    = float(os.getenv("ROUTER_POOL_TIMEOUT", "180"))
-
-_JOSA_RE = re.compile(
-    r"(으로써|으로서|으로부터|라고는|라고도|라고|처럼|까지|부터|에게서|한테서|에게|한테|께|이며|이자|"
-    r"으로|로서|로써|로부터|께서|와는|과는|에서는|에는|에서|에게|한테|와|과|을|를|은|는|이|가|의|에|도|만|랑|하고)$"
+_BASE_STOPWORDS = set(
+    "\uC740 \uB294 \uC774 \uAC00 \uC744 \uB97C \uC5D0 \uC758 \uC640 \uACFC "
+    "\uB3C4 \uB85C \uC73C\uB85C \uC5D0\uC11C \uC5D0\uAC8C \uADF8\uB9AC\uACE0 "
+    "\uADF8\uB7EC\uB098 \uADF8\uB7EC\uC11C \uBB34\uC5C7 \uBB50\uC57C \uBB50\uC9C0 "
+    "\uC124\uBA85 \uD574\uC918 \uB300\uD55C \uB300\uD574 \uC815\uB9AC "
+    "\uAC1C\uC694 \uC18C\uAC1C \uC790\uC138\uD788"
+    .split()
 )
-
-USE_KO_MORPH = (os.getenv("ROUTER_KO_MORPH", "0").lower() not in ("0","false","no"))
-try:
-    from kiwipiepy import Kiwi
-    _KIWI_OK = True
-except Exception:
-    Kiwi = None
-    _KIWI_OK = False
-
-@lru_cache
-def _get_kiwi():
-    return Kiwi() if _KIWI_OK else None
-
-ALLOWED_SOURCE_HOSTS = [h.strip().lower() for h in os.getenv("ALLOWED_SOURCE_HOSTS","").split(",") if h.strip()]
-
-# --- token budget (approx) ------------------------------------
-MODEL_LIMIT_TOKENS = int(os.getenv("ROUTER_MODEL_LIMIT_TOKENS", "16384"))  # context+prompt+output 총 한계
-ROUTER_MAX_TOKENS  = int(os.getenv("ROUTER_MAX_TOKENS", "2048"))           # 하위 호환(기존 이름 유지)
-OUTPUT_TOKENS      = int(os.getenv("ROUTER_OUTPUT_TOKENS", str(ROUTER_MAX_TOKENS)))  # 실제 생성 토큰 상한
-SAFETY_MARGIN      = int(os.getenv("ROUTER_CTX_SAFETY_MARGIN", "512"))     # 컨텍스트 오차 여유
-
-def _est_tokens(s: str) -> int:
-    # UTF-8 바이트 기반 러프 추정(한국어 기준 꽤 보수적으로 잡힘)
-    if not s: return 0
-    return math.ceil(len(s.encode("utf-8")) / 3.2)
-
-def _trim_by_tokens(s: str, budget_tokens: int) -> str:
-    if budget_tokens <= 0: 
-        return ""
-    # 바이트 단위로 잘라 과다 입력 방지
-    enc = s.encode("utf-8")
-    approx_bytes = int(budget_tokens * 3.2)
-    if len(enc) <= approx_bytes:
-        return s
-    cut = enc[:approx_bytes]
-    # 멀티바이트 경계 보정
-    while True:
-        try:
-            return cut.decode("utf-8", errors="ignore")
-        except UnicodeDecodeError:
-            cut = cut[:-1]
-
-def _fit_ctx_to_budget(system_prefix: str, user_text: str, ctx_text: str) -> str:
-    """system_prefix: 컨텍스트를 제외한 시스템 프롬프트(규칙/스타일만), 
-       user_text: 보낼 사용자 메시지(트림된 것), ctx_text: 원본 컨텍스트"""
-    max_input = MODEL_LIMIT_TOKENS - OUTPUT_TOKENS - SAFETY_MARGIN
-    use = _est_tokens(system_prefix) + _est_tokens(user_text)
-    remain = max(0, max_input - use)
-    if remain <= 0:
-        return ""
-    return _trim_by_tokens(ctx_text, remain)
-
-def _build_system_prefix(mode: str) -> str:
-    # build_system_with_context에서 컨텍스트만 뺀 “고정 프리픽스” 생성
-    dummy = build_system_with_context("", mode)
-    # 컨텍스트 태그 라인은 남아있어도 길이에 큰 영향 없음
-    return dummy
-
-
-# --- 상단 환경변수/유틸 근처에 추가 ---
-HISTORY_KEEP = int(os.getenv("ROUTER_KEEP_HISTORY", "0"))  # 0이면 마지막 user만
-USER_MAX_CHARS = int(os.getenv("ROUTER_USER_MAX_CHARS", "2000"))
-ROUTER_HISTORY_MODE = os.getenv("ROUTER_HISTORY_MODE", "hybrid").strip().lower()
-ROUTER_HISTORY_SHORT_CHARS = int(os.getenv("ROUTER_HISTORY_SHORT_CHARS", "80"))
-ROUTER_HISTORY_SIM_THRESH = float(os.getenv("ROUTER_HISTORY_SIM_THRESH", "0.2"))
-ROUTER_HISTORY_AMBIG_LOW = float(os.getenv("ROUTER_HISTORY_AMBIG_LOW", "0.08"))
-ROUTER_HISTORY_USE_LLM = (os.getenv("ROUTER_HISTORY_USE_LLM", "1").lower() not in ("0","false","no"))
-
-_FOLLOWUP_RE = re.compile(r"(?:그거|그것|이거|이것|위에|앞에|방금|이전|앞서|그럼|그리고|추가로|계속|이어|같은|또)", re.I)
-_NEW_TOPIC_RE = re.compile(r"(?:다른\\s*질문|새\\s*질문|새로운\\s*질문|주제\\s*변경|topic\\s*change|topic\\s*switch|별개|전혀\\s*다른|다음\\s*질문)", re.I)
-
-def _trim_user_text(s: str, limit: int) -> str:
-    s = s or ""
-    if len(s) <= limit:
-        return s
-    half = max(600, limit // 2)
-    return s[:half] + "\n...\n" + s[-half:]
-
-def _limited_messages_static(req_msgs: List[Msg]) -> List[dict]:
-    # 마지막 user 메세지
-    last_user = next((m for m in reversed(req_msgs) if m.role == "user"), None)
-    if not last_user:
-        return [{"role": "user", "content": ""}]
-    trimmed = _trim_user_text(sanitize(strip_reasoning(last_user.content)), USER_MAX_CHARS)
-    if HISTORY_KEEP <= 0:
-        return [{"role": "user", "content": trimmed}]
-    # (옵션) 최근 N쌍 유지하되 각 500자 이하로 요약 컷
-    hist = []
-    for m in req_msgs[-(2*HISTORY_KEEP+1): -1]:
-        c = sanitize(strip_reasoning(m.content or ""))[:500]
-        hist.append({"role": m.role, "content": c})
-    return hist + [{"role": "user", "content": trimmed}]
-
-def _token_overlap_ratio(a: str, b: str) -> float:
-    if not a or not b:
-        return 0.0
-    ta = [t for t in _tokens(a) if t not in _STOPWORDS]
-    if not ta:
-        return 0.0
-    tb = set(t for t in _tokens(b) if t not in _STOPWORDS)
-    common = sum(1 for t in ta if t in tb)
-    return common / len(ta)
-
-def _heuristic_history_decision(last_user: str, prev_user: str) -> Optional[bool]:
-    if _NEW_TOPIC_RE.search(last_user):
-        return False
-    if _FOLLOWUP_RE.search(last_user):
-        return True
-    if len(last_user) <= ROUTER_HISTORY_SHORT_CHARS:
-        return True
-    overlap = _token_overlap_ratio(last_user, prev_user)
-    if overlap >= ROUTER_HISTORY_SIM_THRESH:
-        return True
-    if overlap <= ROUTER_HISTORY_AMBIG_LOW:
-        return False
-    return None
-
-async def _llm_history_decision(last_user: str, prev_user: str) -> bool:
-    payload = {
-        "model": OPENAI_MODEL,
-        "messages": [
-            {"role": "system", "content": "Decide if the current user message continues the same topic as the previous user message. Reply only YES or NO."},
-            {"role": "user", "content": f"Previous user message:\\n{prev_user}\\n\\nCurrent user message:\\n{last_user}\\n\\nAnswer YES or NO only."},
-        ],
-        "stream": False,
-        "temperature": 0,
-        "max_tokens": 3,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
-            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
-            j = r.json()
-            raw = j.get("choices", [{}])[0].get("message", {}).get("content", "")
-            ans = strip_reasoning(raw).strip().upper()
-            return ans.startswith("YES")
-    except (httpx.RequestError, ValueError):
-        return False
-
-async def _limited_messages(req_msgs: List[Msg]) -> List[dict]:
-    # 마지막 user 메세지
-    last_user = next((m for m in reversed(req_msgs) if m.role == "user"), None)
-    if not last_user:
-        return [{"role": "user", "content": ""}]
-    trimmed = _trim_user_text(sanitize(strip_reasoning(last_user.content)), USER_MAX_CHARS)
-
-    if HISTORY_KEEP <= 0 or ROUTER_HISTORY_MODE in ("off", "none", "false", "0"):
-        return [{"role": "user", "content": trimmed}]
-    if ROUTER_HISTORY_MODE in ("static", "fixed"):
-        return _limited_messages_static(req_msgs)
-
-    prev_user = None
-    for m in reversed(req_msgs[:-1]):
-        if m.role == "user":
-            prev_user = m
-            break
-    if not prev_user:
-        return [{"role": "user", "content": trimmed}]
-
-    prev_trimmed = _trim_user_text(sanitize(strip_reasoning(prev_user.content)), USER_MAX_CHARS)
-    decision = _heuristic_history_decision(trimmed, prev_trimmed)
-    if decision is None and ROUTER_HISTORY_USE_LLM:
-        decision = await _llm_history_decision(trimmed, prev_trimmed)
-
-    if not decision:
-        return [{"role": "user", "content": trimmed}]
-    return _limited_messages_static(req_msgs)
-
-def _host_of(u: str) -> str:
-    m = re.match(r"https?://([^/]+)", str(u or ""))
-    return m.group(1).lower() if m else ""
-
-def _filter_urls_by_host(urls: list[str]) -> list[str]:
-    if not ALLOWED_SOURCE_HOSTS:
-        return urls
-    out = []
-    for u in urls or []:
-        h = _host_of(u)
-        if h and any(h == w or h.endswith("." + w) for w in ALLOWED_SOURCE_HOSTS):
-            out.append(u)
-    return out
-
-
-def _strip_josa(tok: str) -> str:
-    return _JOSA_RE.sub('', tok)
-
-def _urls_from_contexts(ctxs: list[dict], top_n: int | None = None) -> list[str]:
-    top_n = top_n or ROUTER_SOURCES_MAX
-    out, seen = [], set()
-    for c in ctxs or []:
-        u = c.get("url") or c.get("source")
-        nu = _normalize_url(str(u)) if u else ""
-        if nu and nu not in seen:
-            seen.add(nu); out.append(nu)
-            if len(out) >= top_n:
-                break
-    return out
-
-def _httpx_timeout():
-    import httpx
-    return httpx.Timeout(
-        connect=ROUTER_CONNECT_TIMEOUT,
-        read=ROUTER_READ_TIMEOUT,
-        write=ROUTER_WRITE_TIMEOUT,
-        pool=ROUTER_POOL_TIMEOUT,
-    )
 
 def _item_kind(it: dict) -> str:
     md = it.get("metadata") or {}
@@ -506,6 +366,32 @@ async def _auto_pick_spaces(q: str, client: httpx.AsyncClient) -> list[str] | No
         return [top[1]]
     return None
 
+_JOSA_PATTERN = os.getenv(
+    "ROUTER_JOSA_PATTERN",
+    r"(\uC73C\uB85C\uC368|\uC73C\uB85C\uC11C|\uC73C\uB85C\uC368|\uCC98\uB7FC|\uAE4C\uC9C0|"
+    r"\uBD80\uD130|\uC5D0\uAC8C\uC11C|\uC5D0\uAC8C|\uD55C\uD14C|\uAED8\uC11C|\uB9CC\uD07C|"
+    r"\uB3C4|\uACFC\uB294|\uC5D0\uC11C\uB294|\uC5D0\uC11C|\uC5D0\uAC8C|\uD55C\uD14C|"
+    r"\uB4E4|\uACFC|\uB97C|\uB9CC|\uB300\uB85C)$",
+)
+_JOSA_RE = re.compile(_JOSA_PATTERN)
+
+def _strip_josa(term: str) -> str:
+    if not term:
+        return ""
+    return _JOSA_RE.sub("", term)
+
+USE_KO_MORPH = (os.getenv("ROUTER_KO_MORPH", "0").lower() not in ("0","false","no"))
+try:
+    from kiwipiepy import Kiwi
+    _KIWI_OK = True
+except Exception:
+    Kiwi = None
+    _KIWI_OK = False
+
+@lru_cache
+def _get_kiwi():
+    return Kiwi() if _KIWI_OK else None
+
 def _tokens(s: str) -> list[str]:
     if USE_KO_MORPH and _KIWI_OK:
         kiwi = _get_kiwi()
@@ -524,7 +410,6 @@ def _tokens(s: str) -> list[str]:
         if t2:
             toks.append(t2)
     return toks
-
 
 def relevance_ratio(q: str, ctx: str, ctx_limit: int = 2000) -> float:
     qk = [t for t in _tokens(q) if t not in _STOPWORDS]
