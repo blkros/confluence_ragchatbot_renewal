@@ -103,6 +103,7 @@ services:
       WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY}"
     depends_on:
       - rag-proxy
+      - rag-router
     ports:
       - "3000:8080"
     networks:
@@ -110,7 +111,7 @@ services:
     restart: unless-stopped
     volumes:
       - type: bind
-        source: /opt/confluence-chatbot-renewal/storage/open-webui-data
+        source: ${STORAGE_ROOT}/open-webui-data
         target: /data
         read_only: true
         bind:

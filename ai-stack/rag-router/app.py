@@ -1144,8 +1144,8 @@ async def chat(req: ChatReq):
                 rj3 = r3.json()
                 raw = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 cleaned = clean_llm_output(raw)
-            except Exception:
-                pass
+            except Exception as e:
+                _dbg(f"query_history_source_error: {e}")
             if cleaned.strip() == "인덱스에 근거 없음":
                 fallback = _fallback_summary_from_ctx(ctx_for_prompt)
                 if fallback:

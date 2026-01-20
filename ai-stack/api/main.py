@@ -70,7 +70,7 @@ THIS_FILE_PAT = re.compile(
     r"위\s*(?:파일|문서|자료))",
     re.I
 )
-_FILE_EXT_RE = re.compile(r"\.(pdf|pptx|ppt|xlsx|xls|csv|txt|md)($|\?)", re.I)
+_FILE_EXT_RE = re.compile(r"\.(pdf|pptx|ppt|xlsx|xls|csv|txt|md|docx)($|\?)", re.I)
 _CHAPTER_RE = re.compile(r"제\s*(\d+)\s*장")
 _ARTICLE_RE = re.compile(r"제\s*(\d+)\s*조")
 
@@ -2402,7 +2402,7 @@ async def query(payload: dict = Body(...)):
             try:
                 if mcp_results and (mcp_results[0].get("url") or mcp_results[0].get("id")):
                     want_sticky = False
-                    if forced_page_id or THIS_FILE_PAT.search(q) or re.search(r'([^\s"\'()]+\.(?:pdf|pptx|ppt|xlsx|xls|csv|txt|md))', q, re.I):
+                    if forced_page_id or THIS_FILE_PAT.search(q) or re.search(r'([^\s"\'()]+\.(?:pdf|pptx|ppt|xlsx|xls|csv|txt|md|docx))', q, re.I):
                         want_sticky = True
                     if STICKY_AFTER_MCP and want_sticky:
                         try:
