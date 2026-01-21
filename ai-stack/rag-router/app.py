@@ -711,6 +711,10 @@ def build_system_with_context(ctx_text: str, mode: str) -> str:
         "[컨텍스트 끝]\n"
     )
 
+def _build_system_prefix(mode: str) -> str:
+    # Use empty context to approximate system prompt size for budgeting.
+    return build_system_with_context("", mode)
+
 def _limit_urls(urls: List[str] | None, top_n: int = ROUTER_SOURCES_MAX) -> List[str]:
     out, seen = [], set()
     for u in urls or []:
