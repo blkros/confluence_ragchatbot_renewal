@@ -150,6 +150,7 @@ _BASE_STOPWORDS = set(
     "\uAC1C\uC694 \uC18C\uAC1C \uC790\uC138\uD788"
     .split()
 )
+_STOPWORDS = set(_BASE_STOPWORDS)
 
 def _item_kind(it: dict) -> str:
     md = it.get("metadata") or {}
