@@ -64,6 +64,9 @@ ROUTER_INGEST_WAIT_SEC = float(os.getenv("ROUTER_INGEST_WAIT_SEC", "8"))
 ROUTER_INGEST_WAIT_INTERVAL = float(os.getenv("ROUTER_INGEST_WAIT_INTERVAL", "1.0"))
 ROUTER_UPLOADS_DIR = os.getenv("ROUTER_UPLOADS_DIR", "/data/uploads")
 ROUTER_USER_MAX_CHARS = int(os.getenv("ROUTER_USER_MAX_CHARS", "1200"))
+MODEL_LIMIT_TOKENS = int(os.getenv("ROUTER_MODEL_LIMIT_TOKENS", "8192"))
+SAFETY_MARGIN = int(os.getenv("ROUTER_CTX_SAFETY_MARGIN", "512"))
+OUTPUT_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "2048"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
@@ -312,6 +315,10 @@ def _dbg(msg: str) -> None:
     if ROUTER_DEBUG:
         print(f"[router] {msg}")
 
+def _est_tokens(text: str) -> int:
+    # Rough heuristic: ~4 chars per token in mixed ko/en
+    return max(1, math.ceil(len(text or "") / 4))
+
 def _clamp_max_tokens(system_prompt: str, messages: list[dict], req_max: Optional[int]) -> int:
     base = _pick_max_tokens(req_max)
     input_tokens = _est_tokens(system_prompt)
@@ -320,6 +327,16 @@ def _clamp_max_tokens(system_prompt: str, messages: list[dict], req_max: Optiona
     # leave safety margin for system + output
     remain = max(128, MODEL_LIMIT_TOKENS - input_tokens - SAFETY_MARGIN)
     return min(base, remain)
+
+def _fit_ctx_to_budget(system_prompt: str, user_msg: str, ctx: str) -> str:
+    if not ctx:
+        return ""
+    input_tokens = _est_tokens(system_prompt) + _est_tokens(user_msg)
+    budget = MODEL_LIMIT_TOKENS - SAFETY_MARGIN - OUTPUT_TOKENS - input_tokens
+    if budget <= 0:
+        return ""
+    max_chars = min(len(ctx), budget * 4)
+    return ctx[:max_chars]
 
 def _qa_score(j):
     if not j: return -1
