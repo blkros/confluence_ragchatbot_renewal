@@ -516,6 +516,13 @@ def build_force_context_prompt(ctx_text: str) -> str:
         "[컨텍스트 끝]\n"
     )
 
+def _httpx_timeout() -> httpx.Timeout:
+    connect = float(os.getenv("ROUTER_HTTP_CONNECT_TIMEOUT", "5"))
+    read = float(os.getenv("ROUTER_HTTP_READ_TIMEOUT", "60"))
+    write = float(os.getenv("ROUTER_HTTP_WRITE_TIMEOUT", "60"))
+    pool = float(os.getenv("ROUTER_HTTP_POOL_TIMEOUT", "5"))
+    return httpx.Timeout(connect=connect, read=read, write=write, pool=pool)
+
 def _fallback_summary_from_ctx(ctx_text: str, max_chars: int = 1200) -> str:
     # Strip source tags and keep a short, readable excerpt as last resort.
     text = re.sub(r"\[SOURCE:[^\]]+\]\s*", "", ctx_text or "")
