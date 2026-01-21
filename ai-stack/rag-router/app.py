@@ -63,6 +63,7 @@ ROUTER_QA_MIN_CTX_LEN = int(os.getenv("ROUTER_QA_MIN_CTX_LEN", "120"))
 ROUTER_INGEST_WAIT_SEC = float(os.getenv("ROUTER_INGEST_WAIT_SEC", "8"))
 ROUTER_INGEST_WAIT_INTERVAL = float(os.getenv("ROUTER_INGEST_WAIT_INTERVAL", "1.0"))
 ROUTER_UPLOADS_DIR = os.getenv("ROUTER_UPLOADS_DIR", "/data/uploads")
+ROUTER_USER_MAX_CHARS = int(os.getenv("ROUTER_USER_MAX_CHARS", "1200"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
@@ -524,6 +525,36 @@ def _fallback_summary_from_ctx(ctx_text: str, max_chars: int = 1200) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip() + "..."
+
+def _msg_to_dict(m) -> dict:
+    if isinstance(m, dict):
+        return {"role": m.get("role", "user"), "content": m.get("content", "")}
+    if hasattr(m, "dict"):
+        d = m.dict()
+        return {"role": d.get("role", "user"), "content": d.get("content", "")}
+    return {"role": getattr(m, "role", "user"), "content": getattr(m, "content", str(m))}
+
+async def _limited_messages(messages) -> list[dict]:
+    msgs = [_msg_to_dict(m) for m in (messages or []) if _msg_to_dict(m).get("content") is not None]
+    if not msgs:
+        return []
+    system = [m for m in msgs if m.get("role") == "system"]
+    others = [m for m in msgs if m.get("role") != "system"]
+    if not others:
+        return system[:1] if system else []
+    budget = max(0, ROUTER_USER_MAX_CHARS)
+    total = 0
+    keep = []
+    for m in reversed(others):
+        content = m.get("content") or ""
+        total += len(content)
+        keep.append(m)
+        if budget and total >= budget:
+            break
+    keep.reverse()
+    if system:
+        return [system[0]] + keep
+    return keep
 
 def _replace_last_user(messages: list[dict], content: str) -> list[dict]:
     if not messages:
