@@ -319,6 +319,25 @@ def _est_tokens(text: str) -> int:
     # Rough heuristic: ~4 chars per token in mixed ko/en
     return max(1, math.ceil(len(text or "") / 4))
 
+def _filter_urls_by_host(urls: list[str]) -> list[str]:
+    if not urls:
+        return []
+    raw = os.getenv("ALLOWED_SOURCE_HOSTS", "").strip()
+    if not raw:
+        return urls
+    allowed = {h.strip().lower() for h in raw.split(",") if h.strip()}
+    if not allowed:
+        return urls
+    out = []
+    for u in urls:
+        try:
+            host = (httpx.URL(u).host or "").lower()
+        except Exception:
+            continue
+        if host in allowed:
+            out.append(u)
+    return out
+
 def _clamp_max_tokens(system_prompt: str, messages: list[dict], req_max: Optional[int]) -> int:
     base = _pick_max_tokens(req_max)
     input_tokens = _est_tokens(system_prompt)
