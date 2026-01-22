@@ -537,6 +537,7 @@ def clean_llm_output(text: str) -> str:
 def build_final_only_prompt(ctx_text: str) -> str:
     return (
         "You must answer only with the final answer. Do not include <think> or reasoning.\n"
+        "Answer strictly in Korean.\n"
         "If you cannot answer from the context, reply exactly: 인덱스에 근거 없음\n"
         "[컨텍스트 시작]\n"
         f"{ctx_text}\n"
@@ -546,6 +547,7 @@ def build_final_only_prompt(ctx_text: str) -> str:
 def build_force_context_prompt(ctx_text: str) -> str:
     return (
         "You must answer using only the provided context.\n"
+        "Answer strictly in Korean.\n"
         "Even if the context is partial, provide the best-effort summary.\n"
         "Do NOT say '인덱스에 근거 없음' or refuse.\n"
         "[컨텍스트 시작]\n"
@@ -735,6 +737,7 @@ def build_system_with_context(ctx_text: str, mode: str) -> str:
     return (
         "역할: 주어진 컨텍스트를 근거로 **정확하고 실무 친화적인** 한국어 답변을 작성한다.\n"
         "원칙:\n"
+        "- 반드시 한국어로만 작성한다.\n"
         "- 컨텍스트에 있는 정보만 사용하고 추측 금지.\n"
         "- 고유명사/수치는 가능한 그대로 인용하되 과도한 반복은 피한다.\n"
         "- 내부 추론(<think> 등) 출력 금지, 최종 답만 출력한다.\n"
@@ -809,6 +812,8 @@ def _prefer_single_source(items: list[dict], query: str = "") -> tuple[list[dict
     return filtered, primary
 
 def _label_for_context(items: list[dict] | None, urls: list[str] | None) -> str:
+    if not items and not urls:
+        return "없음(LLM)"
     if _items_have_local_source(items):
         return "로컬 문서(RAG)"
     for u in urls or []:
