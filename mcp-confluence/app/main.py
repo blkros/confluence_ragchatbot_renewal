@@ -112,6 +112,15 @@ def _to_cql_text(q: str) -> str:
     q = re.sub(r"\s+", " ", q).strip()
     return q[:CQL_MAX]
 
+def _cql_terms(text: str, max_terms: int = 5) -> t.List[str]:
+    terms = _norm_ko_tokens(text)[:max_terms]
+    return [t for t in terms if t]
+
+def _cql_or_clause(terms: t.List[str]) -> str:
+    if not terms:
+        return ""
+    return " OR ".join([f'text ~ "{t}"' for t in terms])
+
 async def search_rest(query: str, limit: int = 5):
     text = _to_cql_text(query)
     auth = (USER, PASSWORD) if USER and PASSWORD else None
@@ -353,7 +362,7 @@ def _search_pages_impl(query: str, space: t.Optional[str] = None, limit: int = 1
         return f"space in ({joined})"
 
     def _cql_attempts(text: str) -> t.List[str]:
-        base_parts = ['type=page']
+        base_parts = ['type in (page, attachment)']
         sc = _space_clause(spaces)
         if sc:
             base_parts.append(sc)
@@ -361,32 +370,20 @@ def _search_pages_impl(query: str, space: t.Optional[str] = None, limit: int = 1
             base_parts.append(f"ancestor={ancestor}")
         base = " AND ".join(base_parts)
 
-        # 기존 1차: 문장 전체(현행 유지)
-        attempts: t.List[str] = [f'{base} AND (title ~ "{text}" OR text ~ "{text}")']
+        # term-first OR search to avoid full-sentence CQL
+        terms = _cql_terms(text, max_terms=5)
+        or_clause = _cql_or_clause(terms)
+        attempts: t.List[str] = []
+        if or_clause:
+            attempts.append(f"{base} AND ({or_clause})")
 
-        # 2차: 제목 추정 직격
+        # title guess (short)
         g = _guess_title(text)
         if g:
             attempts.append(f'{base} AND title ~ "{g}"')
 
-        # 3차: 핵심 토큰 기반(한국어 조사 제거)
-        toks = _norm_ko_tokens(text)[:4]
-        if toks:
-            # must(AND): 영문/숫자 또는 도메인 키워드 우선 1~2개
-            must: t.List[str] = []
-            for tkn in toks:
-                if tkn.isascii() or tkn in {"프로젝트","계획","개요","요구사항","보고서"}:
-                    must.append(tkn)
-                if len(must) >= 2:
-                    break
-            if not must:
-                must = toks[:1]
-
-            # 3-1) must AND
-            attempts.append(base + " AND " + " AND ".join([f'text ~ "{t}"' for t in must]))
-            # 3-2) 제목 OR 토큰
-            attempts.append(base + " AND (" + " OR ".join([f'title ~ "{t}"' for t in toks]) + ")")
-
+        # fallback: full sentence
+        attempts.append(f'{base} AND (title ~ "{text}" OR text ~ "{text}")')
         return attempts
 
     attempts = _cql_attempts(text)
