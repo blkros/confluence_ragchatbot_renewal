@@ -1258,16 +1258,21 @@ async def chat(req: ChatReq):
                     if not items_hist:
                         tokens = [t for t in _tokens(clean_user_msg) if t not in _STOPWORDS]
                         stem_terms = [t for t in _tokens(_file_stem_for_query(resolved_src)) if t not in _STOPWORDS]
-                        terms = list(dict.fromkeys(tokens + stem_terms))[:8]
-                        if not terms and ROUTER_DEBUG:
-                            _dbg(f"query_history_source_terms: empty (msg={clean_user_msg!r})")
-                        if terms:
-                            _dbg(f"query_history_source_terms: {terms}")
-                            items_hist, ctx_hist = await _query_source_with_terms(client, resolved_src, terms, k=20)
-                            _dbg(f"query_history_source_terms_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
+                        overlap = [t for t in tokens if t in stem_terms]
+                        if not overlap:
+                            if ROUTER_DEBUG:
+                                _dbg(f"query_history_source_terms_skip: no overlap (tokens={tokens}, stem={stem_terms})")
+                        else:
+                            terms = list(dict.fromkeys(tokens + stem_terms))[:8]
+                            if not terms and ROUTER_DEBUG:
+                                _dbg(f"query_history_source_terms: empty (msg={clean_user_msg!r})")
+                            if terms:
+                                _dbg(f"query_history_source_terms: {terms}")
+                                items_hist, ctx_hist = await _query_source_with_terms(client, resolved_src, terms, k=20)
+                                _dbg(f"query_history_source_terms_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
                     if not items_hist:
                         stem_q = _file_stem_for_query(resolved_src)
-                        if stem_q:
+                        if stem_q and overlap:
                             _dbg(f"query_history_source_fallback: q='{stem_q}'")
                             items_hist, ctx_hist = await _query_source_with_terms(client, resolved_src, [stem_q], k=30)
                             _dbg(f"query_history_source_fallback_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
