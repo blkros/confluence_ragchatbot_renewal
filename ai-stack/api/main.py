@@ -28,6 +28,7 @@ from api.smart_router import router as smart_router
 # empty FAISS 빌드를 위한 보조들
 import faiss
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.embeddings import Embeddings
 from langchain_community.vectorstores import FAISS as FAISSStore
 from langchain_community.docstore.in_memory import InMemoryDocstore
 
@@ -1154,19 +1155,30 @@ def ensure_dirs():
     Path(INDEX_DIR).mkdir(parents=True, exist_ok=True)
     Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 
-def _make_embedder() -> HuggingFaceEmbeddings:
-    emb = HuggingFaceEmbeddings(
+class _PrefixedEmbeddings(Embeddings):
+    def __init__(self, base: Embeddings, use_prefix: bool):
+        self._base = base
+        self._use_prefix = use_prefix
+
+    def embed_query(self, text: str) -> List[float]:
+        if self._use_prefix:
+            text = f"query: {text}"
+        return self._base.embed_query(text)
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        if self._use_prefix:
+            texts = [f"passage: {t}" for t in texts]
+        return self._base.embed_documents(texts)
+
+
+def _make_embedder() -> Embeddings:
+    emb: Embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         model_kwargs={"device": EMBEDDING_DEVICE},
         encode_kwargs={"normalize_embeddings": True}
     )
     if getattr(settings, "E5_USE_PREFIX", False) and "e5" in EMBEDDING_MODEL.lower():
-        _orig_eq = emb.embed_query
-        _orig_ed = emb.embed_documents
-        def _eq(text: str): return _orig_eq(f"query: {text}")
-        def _ed(texts: List[str]): return _orig_ed([f"passage: {t}" for t in texts])
-        emb.embed_query = _eq        # type: ignore
-        emb.embed_documents = _ed    # type: ignore
+        emb = _PrefixedEmbeddings(emb, use_prefix=True)
     return emb
 
 def _load_or_init_vectorstore() -> FAISSStore:
