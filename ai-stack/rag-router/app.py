@@ -71,29 +71,8 @@ OUTPUT_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "2048"))
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
 
-_BASE_SYNONYMS = {
-    "NIA": [
-        "\uAD6D\uAC00\uC9C0\uB2A5\uC815\uBCF4\uC0AC\uD68C\uC9C4\uD765\uC6D0",
-        "\uC9C0\uB2A5\uC815\uBCF4\uC0AC\uD68C\uC9C4\uD765\uC6D0",
-        "\uAD6D\uAC00\uC815\uBCF4\uC9C4\uD765\uC6D0",
-    ],
-    "\uD2B9\uD654\uC815\uBCF4": [
-        "\uD2B9\uAD8C\uC815\uBCF4",
-        "\uD2B9\uAD8C \uBD84\uC11D",
-        "\uD2B9\uAD8C",
-        "\uD2B9\uD654\uB9E4\uBB3C \uC815\uBCF4",
-        "\uD2B9\uD654 \uB9E4\uBB3C",
-    ],
-}
-
-_BASE_ALIASES = {
-    "NIA": [
-        "NIA",
-        "\uAD6D\uAC00\uC9C0\uB2A5\uC815\uBCF4\uC0AC\uD68C\uC9C4\uD765\uC6D0",
-        "\uC9C0\uB2A5\uC815\uBCF4\uC0AC\uD68C\uC9C4\uD765\uC6D0",
-        "\uAD6D\uAC00\uC815\uBCF4\uC9C4\uD765\uC6D0",
-    ]
-}
+_BASE_SYNONYMS: dict[str, list[str]] = {}
+_BASE_ALIASES: dict[str, list[str]] = {}
 
 def _load_json_map(env_json: str, env_path: str) -> dict:
     raw = os.getenv(env_json, "").strip()

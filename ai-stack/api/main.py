@@ -1160,15 +1160,68 @@ class _PrefixedEmbeddings(Embeddings):
         self._base = base
         self._use_prefix = use_prefix
 
+    def _embed_query(self, text: str) -> List[float]:
+        fn = getattr(self._base, "embed_query", None)
+        if callable(fn):
+            return fn(text)
+        fn = getattr(self._base, "embed_documents", None)
+        if callable(fn):
+            return fn([text])[0]
+        fn = getattr(self._base, "embed_texts", None)
+        if callable(fn):
+            return fn([text])[0]
+        raise RuntimeError("embed_query not supported by base embeddings")
+
+    def _embed_documents(self, texts: List[str]) -> List[List[float]]:
+        fn = getattr(self._base, "embed_documents", None)
+        if callable(fn):
+            return fn(texts)
+        fn = getattr(self._base, "embed_query", None)
+        if callable(fn):
+            return [fn(t) for t in texts]
+        fn = getattr(self._base, "embed_texts", None)
+        if callable(fn):
+            return fn(texts)
+        raise RuntimeError("embed_documents not supported by base embeddings")
+
     def embed_query(self, text: str) -> List[float]:
         if self._use_prefix:
             text = f"query: {text}"
-        return self._base.embed_query(text)
+        return self._embed_query(text)
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         if self._use_prefix:
             texts = [f"passage: {t}" for t in texts]
-        return self._base.embed_documents(texts)
+        return self._embed_documents(texts)
+
+
+class _SafeEmbeddings(Embeddings):
+    def __init__(self, base: Embeddings):
+        self._base = base
+
+    def embed_query(self, text: str) -> List[float]:
+        fn = getattr(self._base, "embed_query", None)
+        if callable(fn):
+            return fn(text)
+        fn = getattr(self._base, "embed_documents", None)
+        if callable(fn):
+            return fn([text])[0]
+        fn = getattr(self._base, "embed_texts", None)
+        if callable(fn):
+            return fn([text])[0]
+        raise RuntimeError("embed_query not supported by embeddings")
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        fn = getattr(self._base, "embed_documents", None)
+        if callable(fn):
+            return fn(texts)
+        fn = getattr(self._base, "embed_query", None)
+        if callable(fn):
+            return [fn(t) for t in texts]
+        fn = getattr(self._base, "embed_texts", None)
+        if callable(fn):
+            return fn(texts)
+        raise RuntimeError("embed_documents not supported by embeddings")
 
 
 def _make_embedder() -> Embeddings:
@@ -1179,7 +1232,7 @@ def _make_embedder() -> Embeddings:
     )
     if getattr(settings, "E5_USE_PREFIX", False) and "e5" in EMBEDDING_MODEL.lower():
         emb = _PrefixedEmbeddings(emb, use_prefix=True)
-    return emb
+    return _SafeEmbeddings(emb)
 
 def _load_or_init_vectorstore() -> FAISSStore:
     try:

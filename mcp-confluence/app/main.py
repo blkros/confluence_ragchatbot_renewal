@@ -119,7 +119,25 @@ def _cql_terms(text: str, max_terms: int = 5) -> t.List[str]:
 def _cql_or_clause(terms: t.List[str]) -> str:
     if not terms:
         return ""
-    return " OR ".join([f'text ~ "{t}"' for t in terms])
+    return " OR ".join([f'(title ~ "{t}" OR text ~ "{t}")' for t in terms])
+
+def _rank_candidates(items: t.List[dict], query: str) -> t.List[dict]:
+    terms = [t.lower() for t in _cql_terms(query, max_terms=5)]
+    if not terms:
+        return items
+
+    def _score(it: dict) -> int:
+        title = (it.get("title") or "").lower()
+        excerpt = (it.get("excerpt") or "").lower()
+        s = 0
+        for t in terms:
+            if t and t in title:
+                s += 3
+            if t and t in excerpt:
+                s += 1
+        return s
+
+    return sorted(items, key=lambda it: (_score(it), len(it.get("title") or "")), reverse=True)
 
 async def search_rest(query: str, limit: int = 5):
     text = _to_cql_text(query)
@@ -375,15 +393,15 @@ def _search_pages_impl(query: str, space: t.Optional[str] = None, limit: int = 1
         or_clause = _cql_or_clause(terms)
         attempts: t.List[str] = []
         if or_clause:
-            attempts.append(f"{base} AND ({or_clause})")
+            attempts.append(f"{base} AND ({or_clause}) ORDER BY lastmodified DESC")
 
         # title guess (short)
         g = _guess_title(text)
         if g:
-            attempts.append(f'{base} AND title ~ "{g}"')
+            attempts.append(f'{base} AND title ~ "{g}" ORDER BY lastmodified DESC')
 
         # fallback: full sentence
-        attempts.append(f'{base} AND (title ~ "{text}" OR text ~ "{text}")')
+        attempts.append(f'{base} AND (title ~ "{text}" OR text ~ "{text}") ORDER BY lastmodified DESC')
         return attempts
 
     attempts = _cql_attempts(text)
@@ -418,7 +436,7 @@ def _search_pages_impl(query: str, space: t.Optional[str] = None, limit: int = 1
                     if page_id and title:
                         out.append({"id": page_id, "title": title, "url": page_view_url(page_id), "excerpt": excerpt})
                 if out:
-                    return out
+                    return _rank_candidates(out, text)
                 
         # REST가 전부 0건이면(그리고 JSON을 한 번이라도 받았으면) limit 상향 재시도
         if had_json_attempt and 1 <= int(limit or 10) < 12:
@@ -441,7 +459,7 @@ def _search_pages_impl(query: str, space: t.Optional[str] = None, limit: int = 1
                         if page_id and title:
                             out2.append({"id": page_id, "title": title, "url": page_view_url(page_id), "excerpt": excerpt})
                     if out2:
-                        return out2
+                        return _rank_candidates(out2, text)
 
         # REST가 안 먹었음 → HTML 폴백 필요
         needs_cookie = (client.auth is not None)  # Basic이었으면 쿠키 필요
