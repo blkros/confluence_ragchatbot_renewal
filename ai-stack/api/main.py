@@ -2483,20 +2483,21 @@ async def query(payload: dict = Body(...)):
 
     # 장/조 질의면 필터 스킵
     if items and not (chapter_no or article_no):
-        ctx_all_final = "\n".join(c["text"] for c in contexts)
-        titles_meta_final = " ".join(
-            f"{(h.get('metadata') or {}).get('title','')} {(h.get('metadata') or {}).get('source','')}"
-            for h in items
-        )
-        core_final = [t for t in _query_tokens(q) if not ACRONYM_RE.match(t)]
-        blob_norm_final = _norm_kr(ctx_all_final + " " + titles_meta_final)
-        if core_final and not any(_norm_kr(t) in blob_norm_final for t in core_final):
-            items, contexts = [], []
-
-        if items:
-            anchors = _anchor_tokens_from_query(q) + re.findall(r"[A-Z]{2,5}", q)
-            if anchors and not any(_norm_kr(a) in blob_norm_final for a in anchors):
+        if not THIS_FILE_PAT.search(q):
+            ctx_all_final = "\n".join(c["text"] for c in contexts)
+            titles_meta_final = " ".join(
+                f"{(h.get('metadata') or {}).get('title','')} {(h.get('metadata') or {}).get('source','')}"
+                for h in items
+            )
+            core_final = [t for t in _query_tokens(q) if not ACRONYM_RE.match(t)]
+            blob_norm_final = _norm_kr(ctx_all_final + " " + titles_meta_final)
+            if core_final and not any(_norm_kr(t) in blob_norm_final for t in core_final):
                 items, contexts = [], []
+
+            if items:
+                anchors = _anchor_tokens_from_query(q) + re.findall(r"[A-Z]{2,5}", q)
+                if anchors and not any(_norm_kr(a) in blob_norm_final for a in anchors):
+                    items, contexts = [], []
 
         # 비었을 때의 보조 폴백도 fast 버전으로
         if not items and not DISABLE_INTERNAL_MCP and _should_use_mcp(q, client_spaces, space, reasons, local_ok):
