@@ -538,6 +538,15 @@ def _assistant_used_rag(text: str) -> bool:
         return False
     return ("RAG" in text) and (("근거:" in text) or ("Evidence:" in text))
 
+def _source_query_overlap(src: str, query: str) -> bool:
+    if not src or not query:
+        return False
+    stem_terms = [t for t in _tokens(_file_stem_for_query(src)) if t not in _STOPWORDS]
+    q_terms = [t for t in _tokens(query) if t not in _STOPWORDS]
+    if not stem_terms or not q_terms:
+        return False
+    return any(t in stem_terms for t in q_terms)
+
 def _allow_llm_fallback(
     user_msg: str,
     file_hint: bool,
@@ -989,6 +998,8 @@ async def chat(req: ChatReq):
     rag_followup = bool(prev_assistant_msg) and _assistant_used_rag(prev_assistant_msg) \
         and len(clean_user_msg) <= FOLLOWUP_MAX_CHARS and not topic_shift
     history_src = _history_upload_source(raw_msgs[:-1])
+    if history_src and not _source_query_overlap(history_src, clean_user_msg):
+        topic_shift = True
     if history_src and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
         _dbg(
             "history_source_reset: src='%s' prev='%s' curr='%s'"
