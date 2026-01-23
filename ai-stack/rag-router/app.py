@@ -1367,7 +1367,7 @@ async def chat(req: ChatReq):
                 "model": req.model,
                 "choices": [{
                     "index": 0,
-                    "message": {"role": "assistant", "content": "Evidence: none (RAG). No document context available."},
+                    "message": {"role": "assistant", "content": "근거: 없음(RAG)\n문서 컨텍스트가 없어 답변할 수 없습니다."},
                     "finish_reason": "stop"
                 }],
             }
