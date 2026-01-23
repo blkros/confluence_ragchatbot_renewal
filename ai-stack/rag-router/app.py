@@ -1014,6 +1014,7 @@ async def chat(req: ChatReq):
 
     best_ctx = ""
     src_urls: List[str] = []
+    ctx_items: list[dict] = []
 
     timeout = _httpx_timeout()
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -1050,6 +1051,7 @@ async def chat(req: ChatReq):
                 items = best.get("items") or []
                 ctx_text = "\n\n".join(extract_texts(items))[:MAX_CTX_CHARS]
                 ctx_text = mark_lonely_numbers_as_total(ctx_text)
+        ctx_items = qa_items
 
                 if not ctx_text.strip():
                     continue
@@ -1183,7 +1185,7 @@ async def chat(req: ChatReq):
                 content += "\n\n출처:\n" + "\n".join(f"- {u}" for u in urls)
 
         if ROUTER_SHOW_CONTEXT_LABEL:
-            content = f"근거: {_label_for_context(qa_items, qa_urls)}\n{content}"
+            content = f"근거: {_label_for_context(ctx_items or qa_items, qa_urls)}\n{content}"
 
         return {
             "id": f"cmpl-{uuid.uuid4()}",
@@ -1197,6 +1199,7 @@ async def chat(req: ChatReq):
     async with httpx.AsyncClient(timeout=timeout) as client:
         best_ctx_good=""; best_ctx_any=""
         best_urls_good=[]; best_urls_any=[]
+        best_items_good=[]; best_items_any=[]
         used_q_good=None; used_q_any=None
 
         # [PATCH] /qa 호출 페이로드에 spaces 전달
@@ -1270,12 +1273,13 @@ async def chat(req: ChatReq):
                             pass
 
                 if len(ctx) > len(best_ctx_any):
-                    best_ctx_any = ctx; best_urls_any = urls[:]; used_q_any = v
+                    best_ctx_any = ctx; best_urls_any = urls[:]; used_q_any = v; best_items_any = items[:]
                 if is_good_context_for_qa(ctx) and len(ctx) > len(best_ctx_good):
-                    best_ctx_good = ctx; best_urls_good = urls[:]; used_q_good = v
+                    best_ctx_good = ctx; best_urls_good = urls[:]; used_q_good = v; best_items_good = items[:]
 
         best_ctx = best_ctx_good or best_ctx_any
         src_urls = best_urls_good or best_urls_any
+        ctx_items = best_items_good or best_items_any
         used_q_for_relevance = used_q_good if best_ctx_good else used_q_any
         _dbg(f"query_pick: q='{used_q_for_relevance}' ctx_len={len(best_ctx)} urls={len(src_urls)}")
 
@@ -1284,6 +1288,7 @@ async def chat(req: ChatReq):
                             is_relevant(used_q_for_relevance or orig_user_msg, best_ctx)):
             best_ctx = ""
             src_urls = []
+            ctx_items = []
 
     if not best_ctx or len(best_ctx) < ROUTER_QA_MIN_CTX_LEN:
         if history_src:
@@ -1328,6 +1333,7 @@ async def chat(req: ChatReq):
                     if items_hist and ctx_hist and (not best_ctx or len(ctx_hist) > len(best_ctx)):
                         best_ctx = ctx_hist
                         src_urls = []
+                        ctx_items = items_hist
                         file_hint = True
                         _dbg(f"query_history_source: src='{resolved_src}' ctx_len={len(best_ctx)} items={len(items_hist)}")
             except Exception:
@@ -1354,6 +1360,7 @@ async def chat(req: ChatReq):
                 if items_inf and ctx_inf and (not best_ctx or len(ctx_inf) > len(best_ctx)):
                     best_ctx = ctx_inf
                     src_urls = []
+                    ctx_items = items_inf
                     _dbg(f"query_infer_source: src='{inferred_src}' ctx_len={len(best_ctx)} items={len(items_inf)}")
             except Exception:
                 pass
@@ -1378,6 +1385,7 @@ async def chat(req: ChatReq):
                 if items_latest and (ctx_latest or _ctx_ready_for_file(items_latest, ctx_latest)):
                     best_ctx = ctx_latest
                     src_urls = []
+                    ctx_items = items_latest
                     _dbg(f"query_latest_source: src='{latest_src}' ctx_len={len(best_ctx)} items={len(items_latest)}")
             except Exception:
                 pass
@@ -1568,7 +1576,7 @@ async def chat(req: ChatReq):
             content += "\n\n출처:\n" + "\n".join(f"- {u}" for u in urls)
 
     if ROUTER_SHOW_CONTEXT_LABEL:
-        content = f"근거: {_label_for_context(qa_items, src_urls)}\n{content}"
+        content = f"근거: {_label_for_context(ctx_items or qa_items, src_urls)}\n{content}"
 
     return {
         "id": f"cmpl-{uuid.uuid4()}",
