@@ -263,6 +263,38 @@ async def _resolve_source_from_index(client: httpx.AsyncClient, src: str) -> str
     candidates.sort(key=lambda v: len(v))
     return candidates[0]
 
+async def _find_source_in_index(client: httpx.AsyncClient, src: str) -> str:
+    try:
+        r = await client.get(f"{RAG}/index/sources")
+        j = r.json() if hasattr(r, "json") else {}
+        items = j.get("items") or []
+    except Exception:
+        return ""
+    if not items:
+        return ""
+    stem = _file_stem_for_query(src)
+    if not stem:
+        return ""
+    for it in items:
+        s = str(it.get("source") or "")
+        if s and _file_stem_for_query(s) == stem:
+            return s
+    return ""
+
+async def _wait_for_index_source(
+    client: httpx.AsyncClient,
+    src: str,
+    wait_sec: float,
+) -> str:
+    deadline = time.monotonic() + max(0.0, wait_sec)
+    while True:
+        found = await _find_source_in_index(client, src)
+        if found:
+            return found
+        if time.monotonic() >= deadline:
+            return ""
+        await asyncio.sleep(ROUTER_INGEST_WAIT_INTERVAL)
+
 async def _query_source_with_terms(
     client: httpx.AsyncClient,
     src: str,
@@ -1375,8 +1407,10 @@ async def chat(req: ChatReq):
             try:
                 fallback_q = _file_stem_for_query(latest_src) or clean_user_msg
                 _dbg(f"query_latest_source_try: src='{latest_src}' q='{fallback_q}'")
-                payload = {"question": fallback_q, "k": 10, "sticky": False, "need_fallback": False, "source": latest_src}
                 async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+                    resolved_src = await _wait_for_index_source(client, latest_src, ROUTER_INGEST_WAIT_SEC)
+                    src = resolved_src or latest_src
+                    payload = {"question": fallback_q, "k": 10, "sticky": False, "need_fallback": False, "source": src}
                     j_latest = await _query_with_wait(client, payload, file_hint)
                 items_latest = (j_latest.get("items") or j_latest.get("contexts") or [])
                 ctx_list_latest = (j_latest.get("context_texts")
