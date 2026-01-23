@@ -1051,7 +1051,6 @@ async def chat(req: ChatReq):
                 items = best.get("items") or []
                 ctx_text = "\n\n".join(extract_texts(items))[:MAX_CTX_CHARS]
                 ctx_text = mark_lonely_numbers_as_total(ctx_text)
-        ctx_items = qa_items
 
                 if not ctx_text.strip():
                     continue
@@ -1105,6 +1104,7 @@ async def chat(req: ChatReq):
                 if _LOCAL_SRC_RE.search(src):
                     file_hint = True
                     break
+        ctx_items = qa_items
     # [CHANGE] 길이(80자) 허용 삭제 → 관련도/컨텍스트 품질만
     qa_ok = bool(ctx_text.strip()) and (
         file_hint or is_good_context_for_qa(ctx_text) or is_relevant(orig_user_msg, ctx_text)
