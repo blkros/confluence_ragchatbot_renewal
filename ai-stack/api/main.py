@@ -122,6 +122,7 @@ ACRONYM_BODY_BONUS  = float(getattr(settings, "ACRONYM_BODY_BONUS", 0.25))
 DOMAIN_PURITY_THRESHOLD = float(os.getenv("DOMAIN_PURITY_THRESHOLD", "0.6"))
 DOMAIN_MIN_STRONG_TOKENS = int(os.getenv("DOMAIN_MIN_STRONG_TOKENS", "1"))
 SPACE_SCORE_MIN = int(os.getenv("SPACE_SCORE_MIN", "2"))
+MCP_FALLBACK_ON_EMPTY = (os.getenv("MCP_FALLBACK_ON_EMPTY", "1").lower() not in ("0","false","no"))
 
 _DOMAIN_STATS = {
     "space_token_counts": defaultdict(Counter),  # space -> token -> count
@@ -422,6 +423,8 @@ def _should_use_mcp(
     - 아니면 _domainish_dynamic(q) 결과만 사용
     """
     if space or (client_spaces and len(client_spaces) > 0):
+        return True
+    if MCP_FALLBACK_ON_EMPTY and local_ok is False:
         return True
     return _domainish_dynamic(q or "")
 
