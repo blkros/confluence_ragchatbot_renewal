@@ -25,6 +25,8 @@ _FILE_HINT_RE = re.compile(
 )
 _LOCAL_SRC_RE = re.compile(r"/uploads/|\\uploads\\", re.I)
 _CONF_HOST_RE = re.compile(r"https?://[^/]*confluence[^/]*", re.I)
+_CONF_HINT_RE = re.compile(r"(confluence|컨플|컨플루언스)", re.I)
+_PAGEID_HINT_RE = re.compile(r"pageid\s*=\s*\d+", re.I)
 _CONTEXT_CUT_RE = re.compile(
     r"\s*[-\u2013\u2014]{2,}\s*\[?context\]?\s*.*$|\s*[-\u2013\u2014]{2,}\s*\[?\uCEE8\uD14D\uC2A4\uD2B8\]?\s*.*$",
     re.I | re.S,
@@ -67,6 +69,7 @@ ROUTER_USER_MAX_CHARS = int(os.getenv("ROUTER_USER_MAX_CHARS", "1200"))
 MODEL_LIMIT_TOKENS = int(os.getenv("ROUTER_MODEL_LIMIT_TOKENS", "8192"))
 SAFETY_MARGIN = int(os.getenv("ROUTER_CTX_SAFETY_MARGIN", "512"))
 OUTPUT_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "2048"))
+ALLOW_LLM_FALLBACK = (os.getenv("ROUTER_ALLOW_LLM_FALLBACK", "1").lower() not in ("0","false","no"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
@@ -488,6 +491,19 @@ def is_relevant(q: str, ctx: str) -> bool:
 
 def _is_webui_task(s: str) -> bool:
     return bool(re.match(r"(?is)^\s*#{3}\s*task\s*:", (s or "")))
+
+def _allow_llm_fallback(user_msg: str, file_hint: bool, spaces_hint: list[str] | None) -> bool:
+    if not ALLOW_LLM_FALLBACK:
+        return False
+    if file_hint:
+        return False
+    if _CONF_HOST_RE.search(user_msg or "") or _CONF_HINT_RE.search(user_msg or ""):
+        return False
+    if _PAGEID_HINT_RE.search(user_msg or ""):
+        return False
+    if spaces_hint and _FILE_HINT_RE.search(user_msg or ""):
+        return False
+    return True
 
 app = FastAPI()
 
@@ -1343,7 +1359,18 @@ async def chat(req: ChatReq):
                 pass
 
     if not best_ctx:
-        # 스페이스 힌트 있으면 기존 STRICT 응답, 없으면 일반 LLM 직답
+        if not _allow_llm_fallback(orig_user_msg, file_hint, spaces_hint):
+            return {
+                "id": f"cmpl-{uuid.uuid4()}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": req.model,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Evidence: none (RAG). No document context available."},
+                    "finish_reason": "stop"
+                }],
+            }
         if spaces_hint:
             return {
                 "id": f"cmpl-{uuid.uuid4()}",
