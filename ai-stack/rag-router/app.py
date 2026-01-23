@@ -70,6 +70,7 @@ MODEL_LIMIT_TOKENS = int(os.getenv("ROUTER_MODEL_LIMIT_TOKENS", "8192"))
 SAFETY_MARGIN = int(os.getenv("ROUTER_CTX_SAFETY_MARGIN", "512"))
 OUTPUT_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "2048"))
 ALLOW_LLM_FALLBACK = (os.getenv("ROUTER_ALLOW_LLM_FALLBACK", "1").lower() not in ("0","false","no"))
+FOLLOWUP_MAX_CHARS = int(os.getenv("ROUTER_FOLLOWUP_MAX_CHARS", "120"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
@@ -492,8 +493,28 @@ def is_relevant(q: str, ctx: str) -> bool:
 def _is_webui_task(s: str) -> bool:
     return bool(re.match(r"(?is)^\s*#{3}\s*task\s*:", (s or "")))
 
-def _allow_llm_fallback(user_msg: str, file_hint: bool, spaces_hint: list[str] | None) -> bool:
+def _last_assistant_text(messages: list[dict]) -> str:
+    for m in reversed(messages or []):
+        if (m.get("role") or "") == "assistant":
+            content = str(m.get("content") or "").strip()
+            if content:
+                return content
+    return ""
+
+def _assistant_used_rag(text: str) -> bool:
+    if not text:
+        return False
+    return ("RAG" in text) and (("근거:" in text) or ("Evidence:" in text))
+
+def _allow_llm_fallback(
+    user_msg: str,
+    file_hint: bool,
+    spaces_hint: list[str] | None,
+    rag_followup: bool,
+) -> bool:
     if not ALLOW_LLM_FALLBACK:
+        return False
+    if rag_followup:
         return False
     if file_hint:
         return False
@@ -927,9 +948,12 @@ async def chat(req: ChatReq):
     limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
     # limited_msgs can drop history; use raw req messages for source inference.
     raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
+    prev_assistant_msg = _last_assistant_text(raw_msgs[:-1])
+    rag_followup = bool(prev_assistant_msg) and _assistant_used_rag(prev_assistant_msg) \
+        and len(clean_user_msg) <= FOLLOWUP_MAX_CHARS
     history_src = _history_upload_source(raw_msgs[:-1])
     prev_user_msg = _last_user_text(raw_msgs[:-1])
-    if history_src and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
+    if history_src and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg) and not rag_followup:
         _dbg(
             "history_source_reset: src='%s' prev='%s' curr='%s'"
             % (history_src, prev_user_msg[:80], clean_user_msg[:80])
@@ -1256,7 +1280,7 @@ async def chat(req: ChatReq):
         _dbg(f"query_pick: q='{used_q_for_relevance}' ctx_len={len(best_ctx)} urls={len(src_urls)}")
 
         # 게이트
-        if best_ctx and not (file_hint or is_good_context_for_qa(best_ctx) or
+        if best_ctx and not (file_hint or rag_followup or is_good_context_for_qa(best_ctx) or
                             is_relevant(used_q_for_relevance or orig_user_msg, best_ctx)):
             best_ctx = ""
             src_urls = []
@@ -1359,7 +1383,7 @@ async def chat(req: ChatReq):
                 pass
 
     if not best_ctx:
-        if not _allow_llm_fallback(orig_user_msg, file_hint, spaces_hint):
+        if not _allow_llm_fallback(orig_user_msg, file_hint, spaces_hint, rag_followup):
             return {
                 "id": f"cmpl-{uuid.uuid4()}",
                 "object": "chat.completion",
