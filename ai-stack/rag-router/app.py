@@ -952,11 +952,11 @@ async def chat(req: ChatReq):
     # limited_msgs can drop history; use raw req messages for source inference.
     raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
     prev_assistant_msg = _last_assistant_text(raw_msgs[:-1])
+    prev_user_msg = _last_user_text(raw_msgs[:-1])
     topic_shift = bool(prev_user_msg) and _is_topic_shift(prev_user_msg, clean_user_msg)
     rag_followup = bool(prev_assistant_msg) and _assistant_used_rag(prev_assistant_msg) \
         and len(clean_user_msg) <= FOLLOWUP_MAX_CHARS and not topic_shift
     history_src = _history_upload_source(raw_msgs[:-1])
-    prev_user_msg = _last_user_text(raw_msgs[:-1])
     if history_src and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
         _dbg(
             "history_source_reset: src='%s' prev='%s' curr='%s'"
