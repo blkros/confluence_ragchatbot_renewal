@@ -212,6 +212,29 @@ def _history_upload_source(messages: list[dict]) -> str:
     hint = " ".join(texts[-3:])
     return _match_upload_source_by_query(hint)
 
+def _last_user_text(messages: list[dict]) -> str:
+    for m in reversed(messages or []):
+        if (m.get("role") or "") == "user":
+            text = str(m.get("content") or "").strip()
+            if text:
+                return text
+    return ""
+
+def _token_set(text: str) -> set[str]:
+    if not text:
+        return set()
+    toks = [t for t in _tokens(text) if t not in _STOPWORDS]
+    return set(toks)
+
+def _is_topic_shift(prev_text: str, curr_text: str) -> bool:
+    prev = _token_set(prev_text)
+    curr = _token_set(curr_text)
+    if not prev or not curr:
+        return False
+    overlap = len(prev & curr) / max(1, min(len(prev), len(curr)))
+    thresh = float(os.getenv("ROUTER_HISTORY_SIM_THRESH", "0.2") or 0.2)
+    return overlap < thresh
+
 async def _resolve_source_from_index(client: httpx.AsyncClient, src: str) -> str:
     try:
         r = await client.get(f"{RAG}/index/sources")
@@ -889,6 +912,13 @@ async def chat(req: ChatReq):
     # limited_msgs can drop history; use raw req messages for source inference.
     raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
     history_src = _history_upload_source(raw_msgs[:-1])
+    prev_user_msg = _last_user_text(raw_msgs[:-1])
+    if history_src and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
+        _dbg(
+            "history_source_reset: src='%s' prev='%s' curr='%s'"
+            % (history_src, prev_user_msg[:80], clean_user_msg[:80])
+        )
+        history_src = ""
     if history_src:
         _dbg(f"history_source: src='{history_src}'")
     _dbg(f"req: user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
