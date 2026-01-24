@@ -14,3 +14,15 @@
 - `ROUTER_INGEST_WAIT_INTERVAL` (default: 1.0)
 - `ROUTER_KO_MORPH=1` to enable Korean morphological tokenization (requires kiwipiepy)
 - `ROUTER_UPLOADS_DIR` (default: /data/uploads)
+
+## Problem
+Internal documents were hard to search.
+
+## Constraint
+On-premise environment and SSO authentication.
+
+## Solution
+RAG-based retrieval system with fallback.
+
+## Status
+Proof of Concept (PoC).
