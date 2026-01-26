@@ -380,7 +380,7 @@ def _needs_korean_retry(text: str) -> bool:
         return False
     ko = len(_KO_CHAR_RE.findall(text))
     cjk = len(_CJK_CHAR_RE.findall(text))
-    return cjk >= max(3, ko)
+    return cjk > 0
 
 async def _llm_direct_answer(limited_msgs: list[dict], req: "ChatReq") -> str:
     now_kst = datetime.now(ZoneInfo(TZ)).strftime("%Y-%m-%d (%a) %H:%M:%S %Z")
