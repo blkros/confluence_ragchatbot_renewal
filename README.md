@@ -28,7 +28,7 @@ RAG-based retrieval system with fallback.
 Proof of Concept (PoC).
 
 ## Architecture
-![RAG architecture](docs/assets/architecture.jpg)
+![RAG architecture](docs/assets/포트폴리오.jpg)
 - open-webui: UI
 - rag-router: LLM direct vs RAG route + masking/strict gate
 - rag-proxy: FAISS retrieval + rerank + context build, fallback to mcp-confluence
