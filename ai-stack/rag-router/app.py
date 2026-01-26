@@ -85,6 +85,8 @@ _RAG_PREFERRED_HINTS = re.compile(
     r"(요약|정리|목록|리스트|비교|차이|설명|가이드|사용법|매뉴얼|기능|구성|설치|설정|절차)",
     re.I,
 )
+_KO_CHAR_RE = re.compile(r"[\uAC00-\uD7A3]")
+_CJK_CHAR_RE = re.compile(r"[\u4E00-\u9FFF]")
 
 _BASE_SYNONYMS: dict[str, list[str]] = {}
 _BASE_ALIASES: dict[str, list[str]] = {}
@@ -373,6 +375,13 @@ def _add_trace(payload: dict, trace_id: str) -> dict:
     payload["trace_id"] = trace_id
     return payload
 
+def _needs_korean_retry(text: str) -> bool:
+    if not text:
+        return False
+    ko = len(_KO_CHAR_RE.findall(text))
+    cjk = len(_CJK_CHAR_RE.findall(text))
+    return cjk >= max(3, ko)
+
 async def _llm_direct_answer(limited_msgs: list[dict], req: "ChatReq") -> str:
     now_kst = datetime.now(ZoneInfo(TZ)).strftime("%Y-%m-%d (%a) %H:%M:%S %Z")
     sysmsg = {
@@ -403,7 +412,20 @@ async def _llm_direct_answer(limited_msgs: list[dict], req: "ChatReq") -> str:
                 r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
                 rj2 = r2.json()
                 raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-            return sanitize(clean_llm_output(raw)) or "죄송해요. 지금은 답을 찾지 못했어요."
+            content = sanitize(clean_llm_output(raw)) or "죄송해요. 지금은 답을 찾지 못했어요."
+            if _needs_korean_retry(content):
+                sysmsg["content"] = (
+                    f"현재 날짜와 시간: {now_kst}. "
+                    "반드시 한국어만 사용해 답변하세요. "
+                    "다른 언어(중국어/영어/일본어)는 사용하지 마세요. "
+                    "질문과 무관한 내용은 답하지 마세요."
+                )
+                payload["messages"] = [sysmsg] + limited_msgs
+                r3 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                rj3 = r3.json()
+                raw3 = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                content = sanitize(clean_llm_output(raw3)) or content
+            return content
         except (httpx.RequestError, ValueError):
             return "죄송해요. 지금은 답을 찾지 못했어요."
 
@@ -639,10 +661,10 @@ def _route_state(
         return "RAG_REQUIRED", "required_hints"
     if rag_followup and not topic_shift:
         return "RAG_PREFERRED", "rag_followup"
-    if topic_shift:
-        return "NO_RAG", "topic_shift"
     if _RAG_PREFERRED_HINTS.search(user_msg or ""):
         return "RAG_PREFERRED", "preferred_hints"
+    if topic_shift:
+        return "NO_RAG", "topic_shift"
     return "NO_RAG", "default"
 
 app = FastAPI()
