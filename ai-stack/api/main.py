@@ -123,6 +123,10 @@ DOMAIN_PURITY_THRESHOLD = float(os.getenv("DOMAIN_PURITY_THRESHOLD", "0.6"))
 DOMAIN_MIN_STRONG_TOKENS = int(os.getenv("DOMAIN_MIN_STRONG_TOKENS", "1"))
 SPACE_SCORE_MIN = int(os.getenv("SPACE_SCORE_MIN", "2"))
 MCP_FALLBACK_ON_EMPTY = (os.getenv("MCP_FALLBACK_ON_EMPTY", "1").lower() not in ("0","false","no"))
+RAG_SCORE_GATES = (os.getenv("RAG_SCORE_GATES", "0").lower() not in ("0","false","no"))
+RAG_TOP1_MIN = float(os.getenv("RAG_TOP1_MIN", "0.45"))
+RAG_TOP_GAP_MIN = float(os.getenv("RAG_TOP_GAP_MIN", "0.05"))
+RAG_CORE_COVER_MIN = float(os.getenv("RAG_CORE_COVER_MIN", "0.2"))
 
 _DOMAIN_STATS = {
     "space_token_counts": defaultdict(Counter),  # space -> token -> count
@@ -2372,6 +2376,21 @@ async def query(payload: dict = Body(...)):
     acronym_miss = bool(acr) and not acronym_hit
 
     local_ok = _has_local_hits(items) or _has_local_hits(pool_hits)
+    # score/coverage 기반 부족 판정(옵션)
+    top1 = top2 = 0.0
+    if items:
+        scores = sorted([float(it.get("score") or 0.0) for it in items], reverse=True)
+        top1 = scores[0] if scores else 0.0
+        top2 = scores[1] if len(scores) > 1 else 0.0
+    covered = 0
+    if core:
+        for t in core:
+            if t in ctx_all or t in titles_meta:
+                covered += 1
+    core_cover = (covered / len(core)) if core else 1.0
+    score_low = RAG_SCORE_GATES and (top1 < RAG_TOP1_MIN)
+    gap_low = RAG_SCORE_GATES and ((top1 - top2) < RAG_TOP_GAP_MIN)
+    cover_low = RAG_SCORE_GATES and (core_cover < RAG_CORE_COVER_MIN)
 
     if local_ok:
         NEED_FALLBACK = (len(items) == 0) or missing_article or anchor_miss or acronym_miss
@@ -2383,6 +2402,8 @@ async def query(payload: dict = Body(...)):
             acronym_miss or
             anchor_miss
         )
+    if score_low or gap_low or cover_low:
+        NEED_FALLBACK = True
 
     if (chapter_no or article_no) and items:
         NEED_FALLBACK = False
@@ -2396,6 +2417,9 @@ async def query(payload: dict = Body(...)):
     if missing_article: reasons.append("missing_article")
     if (acr and not acronym_hit): reasons.append("acronym_miss")
     if (anchors and not anchor_hit): reasons.append("anchor_miss")
+    if score_low: reasons.append("low_score")
+    if gap_low: reasons.append("low_gap")
+    if cover_low: reasons.append("low_coverage")
     log.info("fallback_check reasons=%s local_hits=%s", reasons, local_ok)
 
     pid_miss = False

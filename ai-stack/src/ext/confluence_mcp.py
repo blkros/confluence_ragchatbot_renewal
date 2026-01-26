@@ -1,6 +1,6 @@
 # rag-proxy/src/ext/confluence_mcp.py
 from __future__ import annotations
-import os, asyncio, json, logging, re, urllib.parse
+import os, asyncio, json, logging, re, urllib.parse, time
 from typing import Any, Dict, List
 
 from mcp import ClientSession
@@ -10,6 +10,8 @@ from src.config import settings  # ← 설정 연동
 log = logging.getLogger(__name__)
 
 MCP_PROTOCOL_VERSION = os.getenv("MCP_PROTOCOL_VERSION", "2025-06-18")
+MCP_CACHE_TTL = int(os.getenv("MCP_CACHE_TTL", "600"))
+_MCP_CACHE: dict[tuple, tuple[float, list[dict]]] = {}
 
 def _with_version(url: str) -> str:
     if not url:
@@ -63,6 +65,11 @@ async def mcp_search(
     space: str | None = None,
     langs: List[str] | None = None
 ) -> List[Dict[str, Any]]:
+    cache_key = (query, limit, space or "", ",".join(langs or []))
+    if MCP_CACHE_TTL > 0:
+        cached = _MCP_CACHE.get(cache_key)
+        if cached and (cached[0] + MCP_CACHE_TTL) > time.monotonic():
+            return cached[1]
     results_all: List[Dict[str, Any]] = []
 
     # 설정 연동 기본값
@@ -141,7 +148,10 @@ async def mcp_search(
                 if results_all:
                     break
 
-    return _dedup(results_all)
+    results = _dedup(results_all)
+    if MCP_CACHE_TTL > 0:
+        _MCP_CACHE[cache_key] = (time.monotonic(), results)
+    return results
 
 def _collect_payload(out: List[Dict[str, Any]], payload: Any) -> None:
     if isinstance(payload, list):

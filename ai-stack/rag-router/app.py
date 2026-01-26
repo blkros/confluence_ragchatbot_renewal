@@ -73,6 +73,8 @@ ALLOW_LLM_FALLBACK = (os.getenv("ROUTER_ALLOW_LLM_FALLBACK", "1").lower() not in
 FOLLOWUP_MAX_CHARS = int(os.getenv("ROUTER_FOLLOWUP_MAX_CHARS", "120"))
 ROUTER_TRI_STATE = (os.getenv("ROUTER_TRI_STATE", "0").lower() not in ("0","false","no"))
 ROUTER_TRI_STATE_ENFORCE = (os.getenv("ROUTER_TRI_STATE_ENFORCE", "0").lower() not in ("0","false","no"))
+ROUTER_REWRITE = (os.getenv("ROUTER_REWRITE", "0").lower() not in ("0","false","no"))
+ROUTER_REWRITE_TURNS = int(os.getenv("ROUTER_REWRITE_TURNS", "6"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
@@ -374,6 +376,49 @@ def _attach_trace(resp: dict, trace_id: str) -> dict:
 def _add_trace(payload: dict, trace_id: str) -> dict:
     payload["trace_id"] = trace_id
     return payload
+
+async def _rewrite_query(user_msg: str, raw_msgs: list[dict]) -> tuple[str, dict]:
+    if not user_msg:
+        return "", {}
+    # 최근 N턴만 사용 (user/assistant 모두)
+    turns = []
+    for m in raw_msgs[-ROUTER_REWRITE_TURNS:]:
+        role = (m.get("role") or "").strip()
+        content = (m.get("content") or "").strip()
+        if role and content:
+            turns.append({"role": role, "content": content})
+    sysmsg = {
+        "role": "system",
+        "content": (
+            "당신은 검색용 질문 재작성기다. 대화 문맥을 참고해 "
+            "사용자 질문을 독립형 질문으로 재작성하라. "
+            "발전소 ID, 티켓번호, 시스템명, 스페이스 키, pageId 같은 고유값은 절대 삭제하지 마라. "
+            "JSON으로만 답하라: {\"standalone_query\":\"...\",\"entities\":{},\"constraints\":{}}"
+        )
+    }
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [sysmsg] + turns,
+        "stream": False,
+        "temperature": 0,
+        "max_tokens": 256
+    }
+    async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+        try:
+            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            rj = r.json()
+            raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I)
+            data = json.loads(raw)
+            sq = (data.get("standalone_query") or "").strip()
+            return sq, {
+                "entities": data.get("entities") or {},
+                "constraints": data.get("constraints") or {},
+            }
+        except Exception:
+            return "", {}
 
 def _needs_korean_retry(text: str) -> bool:
     if not text:
@@ -1085,7 +1130,17 @@ async def chat(req: ChatReq):
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
     clean_user_msg = normalize_query_router(orig_user_msg)
     file_hint = bool(_FILE_HINT_RE.search(orig_user_msg))
+    rewrite_q = ""
+    rewrite_meta = {}
+    if ROUTER_REWRITE and not _is_webui_task(orig_user_msg):
+        rewrite_q, rewrite_meta = await _rewrite_query(clean_user_msg, raw_msgs)
+        if rewrite_q and ROUTER_DEBUG:
+            _dbg(f"rewrite: trace_id={trace_id} standalone='{rewrite_q}' meta={rewrite_meta}")
     variants = generate_query_variants(clean_user_msg)
+    if rewrite_q and rewrite_q != clean_user_msg:
+        for v in generate_query_variants(rewrite_q):
+            if v not in variants:
+                variants.append(v)
     limited_msgs = await _limited_messages(req.messages)
     limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
     # limited_msgs can drop history; use raw req messages for source inference.
