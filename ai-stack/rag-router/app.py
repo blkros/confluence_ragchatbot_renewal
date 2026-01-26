@@ -1141,10 +1141,10 @@ async def chat(req: ChatReq):
         for v in generate_query_variants(rewrite_q):
             if v not in variants:
                 variants.append(v)
+    # limited_msgs can drop history; use raw req messages for source inference and rewrite.
+    raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
     limited_msgs = await _limited_messages(req.messages)
     limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
-    # limited_msgs can drop history; use raw req messages for source inference.
-    raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
     prev_assistant_msg = _last_assistant_text(raw_msgs[:-1])
     prev_user_msg = _last_user_text(raw_msgs[:-1])
     topic_shift = bool(prev_user_msg) and _is_topic_shift(prev_user_msg, clean_user_msg)
