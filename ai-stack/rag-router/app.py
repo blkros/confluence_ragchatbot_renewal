@@ -384,7 +384,13 @@ async def _rewrite_query(user_msg: str, raw_msgs: list[dict]) -> tuple[str, dict
     turns = []
     for m in raw_msgs[-ROUTER_REWRITE_TURNS:]:
         role = (m.get("role") or "").strip()
-        content = (m.get("content") or "").strip()
+        content = m.get("content") or ""
+        if not isinstance(content, str):
+            try:
+                content = json.dumps(content, ensure_ascii=False)
+            except Exception:
+                content = str(content)
+        content = content.strip()
         if role and content:
             turns.append({"role": role, "content": content})
     sysmsg = {
@@ -1130,6 +1136,8 @@ async def chat(req: ChatReq):
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
     clean_user_msg = normalize_query_router(orig_user_msg)
     file_hint = bool(_FILE_HINT_RE.search(orig_user_msg))
+    # limited_msgs can drop history; use raw req messages for source inference and rewrite.
+    raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
     rewrite_q = ""
     rewrite_meta = {}
     if ROUTER_REWRITE and not _is_webui_task(orig_user_msg):
@@ -1141,8 +1149,6 @@ async def chat(req: ChatReq):
         for v in generate_query_variants(rewrite_q):
             if v not in variants:
                 variants.append(v)
-    # limited_msgs can drop history; use raw req messages for source inference and rewrite.
-    raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
     limited_msgs = await _limited_messages(req.messages)
     limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
     prev_assistant_msg = _last_assistant_text(raw_msgs[:-1])
