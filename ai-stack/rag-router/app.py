@@ -72,6 +72,7 @@ OUTPUT_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "2048"))
 ALLOW_LLM_FALLBACK = (os.getenv("ROUTER_ALLOW_LLM_FALLBACK", "1").lower() not in ("0","false","no"))
 FOLLOWUP_MAX_CHARS = int(os.getenv("ROUTER_FOLLOWUP_MAX_CHARS", "120"))
 ROUTER_TRI_STATE = (os.getenv("ROUTER_TRI_STATE", "0").lower() not in ("0","false","no"))
+ROUTER_TRI_STATE_ENFORCE = (os.getenv("ROUTER_TRI_STATE_ENFORCE", "0").lower() not in ("0","false","no"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
@@ -371,6 +372,40 @@ def _attach_trace(resp: dict, trace_id: str) -> dict:
 def _add_trace(payload: dict, trace_id: str) -> dict:
     payload["trace_id"] = trace_id
     return payload
+
+async def _llm_direct_answer(limited_msgs: list[dict], req: "ChatReq") -> str:
+    now_kst = datetime.now(ZoneInfo(TZ)).strftime("%Y-%m-%d (%a) %H:%M:%S %Z")
+    sysmsg = {
+        "role": "system",
+        "content": (
+            f"현재 날짜와 시간: {now_kst}. "
+            "반드시 한국어로 답변하세요. "
+            "문서 인덱스가 없어도 일반 상식·수학·날짜/시간 등은 직접 답하세요. "
+            "‘인덱스에 근거 없음’ 같은 말은 하지 마세요."
+        )
+    }
+    max_tokens = _clamp_max_tokens(sysmsg["content"], limited_msgs, req.max_tokens)
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [sysmsg] + limited_msgs,
+        "stream": False,
+        "temperature": 0,
+        "max_tokens": max_tokens
+    }
+    async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+        try:
+            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            rj = r.json()
+            raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+            if ROUTER_DEBUG and not raw:
+                _dbg(f"llm_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
+            if not raw:
+                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                rj2 = r2.json()
+                raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+            return sanitize(clean_llm_output(raw)) or "죄송해요. 지금은 답을 찾지 못했어요."
+        except (httpx.RequestError, ValueError):
+            return "죄송해요. 지금은 답을 찾지 못했어요."
 
 def _est_tokens(text: str) -> int:
     # Rough heuristic: ~4 chars per token in mixed ko/en
@@ -1108,9 +1143,22 @@ async def chat(req: ChatReq):
     timeout = _httpx_timeout()
     async with httpx.AsyncClient(timeout=timeout) as client:
         spaces_hint = await _auto_pick_spaces(orig_user_msg, client)
+        state = None
+        reason = None
         if ROUTER_TRI_STATE:
             state, reason = _route_state(orig_user_msg, file_hint, spaces_hint, rag_followup, topic_shift)
             _dbg(f"route_state: trace_id={trace_id} state={state} reason={reason}")
+        if ROUTER_TRI_STATE_ENFORCE and state == "NO_RAG" and not (file_hint or spaces_hint):
+            content = await _llm_direct_answer(limited_msgs, req)
+            if ROUTER_SHOW_CONTEXT_LABEL:
+                content = "근거: 없음(LLM)\n" + content
+            return _attach_trace({
+                "id": f"cmpl-{uuid.uuid4()}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": req.model,
+                "choices": [{"index":0,"message":{"role":"assistant","content":content},"finish_reason":"stop"}],
+            }, trace_id)
 
         # === QA 경로 ===
         qa_json = None; qa_items = []; qa_urls = []
@@ -1492,7 +1540,11 @@ async def chat(req: ChatReq):
                 pass
 
     if not best_ctx:
-        if not _allow_llm_fallback(orig_user_msg, file_hint, spaces_hint, rag_followup, topic_shift):
+        if ROUTER_TRI_STATE_ENFORCE and state == "RAG_REQUIRED":
+            allow_llm = False
+        else:
+            allow_llm = _allow_llm_fallback(orig_user_msg, file_hint, spaces_hint, rag_followup, topic_shift)
+        if not allow_llm:
             return _attach_trace({
                 "id": f"cmpl-{uuid.uuid4()}",
                 "object": "chat.completion",
@@ -1517,39 +1569,7 @@ async def chat(req: ChatReq):
                 }],
             }, trace_id)
 
-        # 스페이스 힌트가 없으면(=일반 상식 질의일 가능성) → LLM 직답
-        now_kst = datetime.now(ZoneInfo(TZ)).strftime("%Y-%m-%d (%a) %H:%M:%S %Z")
-        sysmsg = {
-            "role": "system",
-            "content": (
-                f"현재 날짜와 시간: {now_kst}. "
-                "반드시 한국어로 답변하세요. "
-                "문서 인덱스가 없어도 일반 상식·수학·날짜/시간 등은 직접 답하세요. "
-                "‘인덱스에 근거 없음’ 같은 말은 하지 마세요."
-            )
-        }
-        max_tokens = _clamp_max_tokens(sysmsg["content"], limited_msgs, req.max_tokens)
-        payload = {
-            "model": OPENAI_MODEL,
-            "messages": [sysmsg] + limited_msgs,
-            "stream": False,
-            "temperature": 0,
-            "max_tokens": max_tokens
-        }
-        async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
-            try:
-                r = await client.post(f"{OPENAI}/chat/completions", json=payload)
-                rj = r.json()
-                raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-                if ROUTER_DEBUG and not raw:
-                    _dbg(f"llm_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
-                if not raw:
-                    r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
-                    rj2 = r2.json()
-                    raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-                content = sanitize(clean_llm_output(raw)) or "죄송해요. 지금은 답을 찾지 못했어요."
-            except (httpx.RequestError, ValueError):
-                content = "죄송해요. 지금은 답을 찾지 못했어요."
+        content = await _llm_direct_answer(limited_msgs, req)
 
         if ROUTER_SHOW_CONTEXT_LABEL:
             content = "근거: 없음(LLM)\n" + content
