@@ -69,6 +69,7 @@ async def mcp_search(
     if MCP_CACHE_TTL > 0:
         cached = _MCP_CACHE.get(cache_key)
         if cached and (cached[0] + MCP_CACHE_TTL) > time.monotonic():
+            log.info("mcp_cache_hit: key=%r ttl=%s", cache_key, MCP_CACHE_TTL)
             return cached[1]
     results_all: List[Dict[str, Any]] = []
 
@@ -151,6 +152,7 @@ async def mcp_search(
     results = _dedup(results_all)
     if MCP_CACHE_TTL > 0:
         _MCP_CACHE[cache_key] = (time.monotonic(), results)
+        log.info("mcp_cache_store: key=%r size=%d", cache_key, len(results))
     return results
 
 def _collect_payload(out: List[Dict[str, Any]], payload: Any) -> None:
