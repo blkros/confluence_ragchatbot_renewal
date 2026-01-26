@@ -71,9 +71,19 @@ SAFETY_MARGIN = int(os.getenv("ROUTER_CTX_SAFETY_MARGIN", "512"))
 OUTPUT_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "2048"))
 ALLOW_LLM_FALLBACK = (os.getenv("ROUTER_ALLOW_LLM_FALLBACK", "1").lower() not in ("0","false","no"))
 FOLLOWUP_MAX_CHARS = int(os.getenv("ROUTER_FOLLOWUP_MAX_CHARS", "120"))
+ROUTER_TRI_STATE = (os.getenv("ROUTER_TRI_STATE", "0").lower() not in ("0","false","no"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
+_RAG_REQUIRED_HINTS = re.compile(
+    r"(사내|내부|컨플|컨플루언스|confluence|정책|규정|계약|요금|가격|권한|"
+    r"운영|장애|로그|이력|보고|프로젝트|업무|고객사|스페이스|pageid|첨부|파일|문서)",
+    re.I,
+)
+_RAG_PREFERRED_HINTS = re.compile(
+    r"(요약|정리|목록|리스트|비교|차이|설명|가이드|사용법|매뉴얼|기능|구성|설치|설정|절차)",
+    re.I,
+)
 
 _BASE_SYNONYMS: dict[str, list[str]] = {}
 _BASE_ALIASES: dict[str, list[str]] = {}
@@ -579,6 +589,27 @@ def _allow_llm_fallback(
         return False
     return True
 
+def _route_state(
+    user_msg: str,
+    file_hint: bool,
+    spaces_hint: list[str] | None,
+    rag_followup: bool,
+    topic_shift: bool,
+) -> tuple[str, str]:
+    if file_hint or spaces_hint or _CONF_HOST_RE.search(user_msg or "") or _CONF_HINT_RE.search(user_msg or ""):
+        return "RAG_REQUIRED", "file_or_space_or_confluence"
+    if _PAGEID_HINT_RE.search(user_msg or ""):
+        return "RAG_REQUIRED", "pageid"
+    if _RAG_REQUIRED_HINTS.search(user_msg or ""):
+        return "RAG_REQUIRED", "required_hints"
+    if rag_followup and not topic_shift:
+        return "RAG_PREFERRED", "rag_followup"
+    if topic_shift:
+        return "NO_RAG", "topic_shift"
+    if _RAG_PREFERRED_HINTS.search(user_msg or ""):
+        return "RAG_PREFERRED", "preferred_hints"
+    return "NO_RAG", "default"
+
 app = FastAPI()
 
 class Msg(BaseModel):
@@ -1007,6 +1038,7 @@ async def chat(req: ChatReq):
     topic_shift = bool(prev_user_msg) and _is_topic_shift(prev_user_msg, clean_user_msg)
     rag_followup = bool(prev_assistant_msg) and _assistant_used_rag(prev_assistant_msg) \
         and len(clean_user_msg) <= FOLLOWUP_MAX_CHARS and not topic_shift
+    spaces_hint: list[str] | None = None
     history_src = _history_upload_source(raw_msgs[:-1])
     if history_src and not _source_query_overlap(history_src, clean_user_msg):
         topic_shift = True
@@ -1076,6 +1108,9 @@ async def chat(req: ChatReq):
     timeout = _httpx_timeout()
     async with httpx.AsyncClient(timeout=timeout) as client:
         spaces_hint = await _auto_pick_spaces(orig_user_msg, client)
+        if ROUTER_TRI_STATE:
+            state, reason = _route_state(orig_user_msg, file_hint, spaces_hint, rag_followup, topic_shift)
+            _dbg(f"route_state: trace_id={trace_id} state={state} reason={reason}")
 
         # === QA 경로 ===
         qa_json = None; qa_items = []; qa_urls = []
