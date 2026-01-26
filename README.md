@@ -16,16 +16,16 @@
 - `ROUTER_UPLOADS_DIR` (default: /data/uploads)
 
 ## Problem
-Internal documents were hard to search.
+We needed a faster way to search internal Confluence pages and uploaded files.
 
 ## Constraint
-On-premise environment and SSO authentication.
+SSO/access control frequently blocked REST API calls; WebUI MCP integration was not sufficient.
 
 ## Solution
-RAG-based retrieval system with fallback.
+Implemented a RAG pipeline with a router/proxy separation and an SSO-safe Confluence fallback.
 
 ## Status
-Proof of Concept (PoC).
+PoC verified on an on-prem GPU server; preparing for production hardening.
 
 ## Architecture
 ![RAG architecture](docs/assets/포트폴리오.jpg)
