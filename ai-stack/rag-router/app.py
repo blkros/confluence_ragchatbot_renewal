@@ -353,6 +353,15 @@ def _dbg(msg: str) -> None:
     if ROUTER_DEBUG:
         print(f"[router] {msg}")
 
+def _attach_trace(resp: dict, trace_id: str) -> dict:
+    if isinstance(resp, dict):
+        resp.setdefault("trace_id", trace_id)
+    return resp
+
+def _add_trace(payload: dict, trace_id: str) -> dict:
+    payload["trace_id"] = trace_id
+    return payload
+
 def _est_tokens(text: str) -> int:
     # Rough heuristic: ~4 chars per token in mixed ko/en
     return max(1, math.ceil(len(text or "") / 4))
@@ -984,6 +993,7 @@ def models():
 
 @app.post("/v1/chat/completions")
 async def chat(req: ChatReq):
+    trace_id = str(uuid.uuid4())
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
     clean_user_msg = normalize_query_router(orig_user_msg)
     file_hint = bool(_FILE_HINT_RE.search(orig_user_msg))
@@ -1008,7 +1018,7 @@ async def chat(req: ChatReq):
         history_src = ""
     if history_src:
         _dbg(f"history_source: src='{history_src}'")
-    _dbg(f"req: user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
+    _dbg(f"req: trace_id={trace_id} user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
 
     # 메타 태스크면 RAG 건너뛰고 그대로 모델로 전달 (JSON 형식 보존)
     if _is_webui_task(orig_user_msg):
@@ -1034,10 +1044,10 @@ async def chat(req: ChatReq):
                 except Exception:
                     pass
 
-                return j
+                return _attach_trace(j, trace_id)
         except (httpx.RequestError, ValueError) as e:
             # 타임아웃/네트워크 장애는 200으로 안전하게 래핑해 돌려줌
-            return {
+            return _attach_trace({
                 "id": f"cmpl-{uuid.uuid4()}",
                 "object": "chat.completion",
                 "created": int(time.time()),
@@ -1051,7 +1061,7 @@ async def chat(req: ChatReq):
                     "finish_reason": "stop"
                 }],
                 "error": {"type": e.__class__.__name__, "message": str(e)}
-            }
+            }, trace_id)
 
 
     ctx_text = ""
@@ -1132,6 +1142,7 @@ async def chat(req: ChatReq):
             if len(ctx_text) < ROUTER_QA_MIN_CTX_LEN or top_kind == "title":
                 try:
                     payload_src = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": primary_src}
+                    _add_trace(payload_src, trace_id)
                     async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
                         j_src = (await client.post(f"{RAG}/query", json=payload_src)).json()
                     items2 = (j_src.get("items") or j_src.get("contexts") or [])
@@ -1234,13 +1245,13 @@ async def chat(req: ChatReq):
         if ROUTER_SHOW_CONTEXT_LABEL:
             content = f"근거: {_label_for_context(ctx_items or qa_items, qa_urls)}\n{content}"
 
-        return {
+        return _attach_trace({
             "id": f"cmpl-{uuid.uuid4()}",
             "object": "chat.completion",
             "created": int(time.time()),
             "model": req.model,
             "choices": [{"index":0,"message":{"role":"assistant","content":content},"finish_reason":"stop"}],
-        }
+        }, trace_id)
 
     # ====== 2-B) QA 실패 → QUERY 경로 ======
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -1255,6 +1266,7 @@ async def chat(req: ChatReq):
                 payload1 = {"question": v, "k": 10, "sticky": False, "need_fallback": False}
                 if spaces_hint:
                     payload1["spaces"] = spaces_hint
+                _add_trace(payload1, trace_id)
                 j1 = await _query_with_wait(client, payload1, file_hint)
             except Exception:
                 j1 = {}
@@ -1263,6 +1275,7 @@ async def chat(req: ChatReq):
                 payload2 = {"question": v, "k": 10, "sticky": True, "need_fallback": False}
                 if spaces_hint:
                     payload2["spaces"] = spaces_hint
+                _add_trace(payload2, trace_id)
                 j2 = await _query_with_wait(client, payload2, file_hint)
             except Exception:
                 j2 = {}
@@ -1299,6 +1312,7 @@ async def chat(req: ChatReq):
                     if top_kind == "title" and src:
                         try:
                             payload_src = {"question": _file_stem_for_query(src) or v, "k": 50, "sticky": False, "need_fallback": False, "source": src}
+                            _add_trace(payload_src, trace_id)
                             j_src = (await client.post(f"{RAG}/query", json=payload_src)).json()
                             items2 = (j_src.get("items") or j_src.get("contexts") or [])
                             urls2  = _limit_urls(j_src.get("source_urls")) if j_src.get("source_urls") else _collect_urls_from_items(items2)
@@ -1346,6 +1360,7 @@ async def chat(req: ChatReq):
                         _dbg(f"query_history_source_resolve: src='{history_src}' -> '{resolved_src}'")
                     _dbg(f"query_history_source_try: src='{resolved_src}' q='{clean_user_msg}'")
                     payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": resolved_src}
+                    _add_trace(payload, trace_id)
                     j_hist = await client.post(f"{RAG}/query", json=payload)
                     j_hist = j_hist.json() if hasattr(j_hist, "json") else {}
                     items_hist = (j_hist.get("items") or j_hist.get("contexts") or [])
@@ -1393,6 +1408,7 @@ async def chat(req: ChatReq):
             try:
                 _dbg(f"query_infer_source_try: src='{inferred_src}' q='{clean_user_msg}'")
                 payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": inferred_src}
+                _add_trace(payload, trace_id)
                 async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
                     j_inf = await client.post(f"{RAG}/query", json=payload)
                 j_inf = j_inf.json() if hasattr(j_inf, "json") else {}
@@ -1422,6 +1438,7 @@ async def chat(req: ChatReq):
                     resolved_src = await _wait_for_index_source(client, latest_src, ROUTER_INGEST_WAIT_SEC)
                     src = resolved_src or latest_src
                     payload = {"question": fallback_q, "k": 10, "sticky": False, "need_fallback": False, "source": src}
+                    _add_trace(payload, trace_id)
                     j_latest = await _query_with_wait(client, payload, file_hint)
                 items_latest = (j_latest.get("items") or j_latest.get("contexts") or [])
                 ctx_list_latest = (j_latest.get("context_texts")
@@ -1441,7 +1458,7 @@ async def chat(req: ChatReq):
 
     if not best_ctx:
         if not _allow_llm_fallback(orig_user_msg, file_hint, spaces_hint, rag_followup, topic_shift):
-            return {
+            return _attach_trace({
                 "id": f"cmpl-{uuid.uuid4()}",
                 "object": "chat.completion",
                 "created": int(time.time()),
@@ -1451,9 +1468,9 @@ async def chat(req: ChatReq):
                     "message": {"role": "assistant", "content": "근거: 없음(RAG)\n문서 컨텍스트가 없어 답변할 수 없습니다."},
                     "finish_reason": "stop"
                 }],
-            }
+            }, trace_id)
         if spaces_hint:
-            return {
+            return _attach_trace({
                 "id": f"cmpl-{uuid.uuid4()}",
                 "object": "chat.completion",
                 "created": int(time.time()),
@@ -1463,7 +1480,7 @@ async def chat(req: ChatReq):
                     "message": {"role": "assistant", "content": "인덱스에 근거 없음"},
                     "finish_reason": "stop"
                 }],
-            }
+            }, trace_id)
 
         # 스페이스 힌트가 없으면(=일반 상식 질의일 가능성) → LLM 직답
         now_kst = datetime.now(ZoneInfo(TZ)).strftime("%Y-%m-%d (%a) %H:%M:%S %Z")
@@ -1502,7 +1519,7 @@ async def chat(req: ChatReq):
         if ROUTER_SHOW_CONTEXT_LABEL:
             content = "근거: 없음(LLM)\n" + content
 
-        return {
+        return _attach_trace({
             "id": f"cmpl-{uuid.uuid4()}",
             "object": "chat.completion",
             "created": int(time.time()),
@@ -1512,7 +1529,7 @@ async def chat(req: ChatReq):
                 "message": {"role": "assistant", "content": content},
                 "finish_reason": "stop"
             }],
-        }
+        }, trace_id)
 
     
     # ===== QUERY 경로 LLM 호출 정리본 =====
@@ -1628,10 +1645,10 @@ async def chat(req: ChatReq):
     if ROUTER_SHOW_CONTEXT_LABEL:
         content = f"근거: {_label_for_context(ctx_items or qa_items, src_urls)}\n{content}"
 
-    return {
+    return _attach_trace({
         "id": f"cmpl-{uuid.uuid4()}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": req.model,
         "choices": [{"index":0,"message":{"role":"assistant","content":content},"finish_reason":"stop"}],
-    }
+    }, trace_id)

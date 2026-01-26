@@ -1804,6 +1804,9 @@ async def query(payload: dict = Body(...)):
                 q = m["content"]; break
     if not q.strip():
         raise HTTPException(400, "question/query/q/messages is required")
+    trace_id = (payload or {}).get("trace_id")
+    if trace_id:
+        log.info("trace_id=%s q=%r", trace_id, q[:160])
 
     # [ADD] pageId 힌트만 추출(잠금 아님)
     page_id = (payload or {}).get("pageId")
@@ -1824,6 +1827,7 @@ async def query(payload: dict = Body(...)):
             "context_texts": [],
             "documents": [],
             "chunks": [],
+            "trace_id": trace_id,
             "notes": {"meta_task": True}
         }
 
@@ -1854,6 +1858,7 @@ async def query(payload: dict = Body(...)):
             "chunks": [],
             "source_urls": [],
             "direct_answer": direct,
+            "trace_id": trace_id,
             "notes": {"routed": "no_rag", "reason": "datetime"}
         }
 
@@ -2535,6 +2540,8 @@ async def query(payload: dict = Body(...)):
                         _set_sticky(target)
 
     base_notes = {"missing_article": missing_article, "article_no": article_no}
+    if trace_id:
+        base_notes["trace_id"] = trace_id
     if fallback_attempted:
         base_notes["fallback_used"] = True
         base_notes["indexed"] = (added > 0)
