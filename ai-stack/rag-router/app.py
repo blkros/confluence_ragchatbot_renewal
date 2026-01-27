@@ -713,6 +713,22 @@ def _source_query_overlap(src: str, query: str) -> bool:
         return False
     return any(t in stem_terms for t in q_terms)
 
+def _focus_query_for_source(query: str) -> str:
+    if not query:
+        return ""
+    q_lower = query.lower()
+    toks = [t for t in _tokens(query) if t not in _STOPWORDS]
+    for key in ("도커", "docker", "컨테이너", "이미지", "compose"):
+        if key in toks or key in q_lower:
+            return key
+    uniq = []
+    for t in toks:
+        if t not in uniq:
+            uniq.append(t)
+        if len(uniq) >= 3:
+            break
+    return " ".join(uniq) if uniq else query
+
 def _allow_llm_fallback(
     user_msg: str,
     file_hint: bool,
@@ -1360,8 +1376,11 @@ async def chat(req: ChatReq):
             title_expand = ROUTER_TITLE_EXPAND and (all_title_topn or top_kind in ROUTER_TITLE_EXPAND_KINDS)
             if len(ctx_text) < ROUTER_QA_MIN_CTX_LEN or title_expand:
                 try:
+                    focus_q = _focus_query_for_source(clean_user_msg) or clean_user_msg
+                    if ROUTER_DEBUG:
+                        _dbg(f"qa_source_focus: q='{clean_user_msg}' focus='{focus_q}' src='{primary_src}'")
                     payload_src = {
-                        "question": clean_user_msg,
+                        "question": focus_q,
                         "k": ROUTER_TITLE_EXPAND_K,
                         "sticky": False,
                         "need_fallback": False,
@@ -1552,7 +1571,10 @@ async def chat(req: ChatReq):
                 if items and (len(ctx) < ROUTER_QA_MIN_CTX_LEN or title_expand):
                     if src and title_expand:
                         try:
-                            payload_src = {"question": v, "k": ROUTER_TITLE_EXPAND_K, "sticky": False, "need_fallback": False, "source": src}
+                            focus_q = _focus_query_for_source(v) or v
+                            if ROUTER_DEBUG:
+                                _dbg(f"query_source_focus: q='{v}' focus='{focus_q}' src='{src}'")
+                            payload_src = {"question": focus_q, "k": ROUTER_TITLE_EXPAND_K, "sticky": False, "need_fallback": False, "source": src}
                             _add_trace(payload_src, trace_id)
                             j_src = (await client.post(f"{RAG}/query", json=payload_src)).json()
                             items2 = (j_src.get("items") or j_src.get("contexts") or [])
