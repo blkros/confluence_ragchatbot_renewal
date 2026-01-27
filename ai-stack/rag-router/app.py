@@ -65,6 +65,9 @@ ROUTER_QA_MIN_CTX_LEN = int(os.getenv("ROUTER_QA_MIN_CTX_LEN", "120"))
 ROUTER_TITLE_EXPAND = (os.getenv("ROUTER_TITLE_EXPAND", "1").lower() not in ("0","false","no"))
 ROUTER_TITLE_EXPAND_TOPN = int(os.getenv("ROUTER_TITLE_EXPAND_TOPN", "3"))
 ROUTER_TITLE_EXPAND_K = int(os.getenv("ROUTER_TITLE_EXPAND_K", "60"))
+ROUTER_TITLE_EXPAND_KINDS = set(
+    k.strip() for k in os.getenv("ROUTER_TITLE_EXPAND_KINDS", "title,summary,section").split(",") if k.strip()
+)
 ROUTER_INGEST_WAIT_SEC = float(os.getenv("ROUTER_INGEST_WAIT_SEC", "8"))
 ROUTER_INGEST_WAIT_INTERVAL = float(os.getenv("ROUTER_INGEST_WAIT_INTERVAL", "1.0"))
 ROUTER_UPLOADS_DIR = os.getenv("ROUTER_UPLOADS_DIR", "/data/uploads")
@@ -1516,12 +1519,17 @@ async def chat(req: ChatReq):
                     all_title_topn = (title_topn == len(topn_items))
                 else:
                     all_title_topn = False
-                if items and (len(ctx) < ROUTER_QA_MIN_CTX_LEN or (ROUTER_TITLE_EXPAND and all_title_topn)):
+                if items:
                     top = items[0]
                     md = (top.get("metadata") or {}) if isinstance(top, dict) else {}
-                    top_kind = md.get("kind") or top.get("kind")
+                    top_kind = (md.get("kind") or top.get("kind") or "")
                     src = _get_item_source(top)
-                    if src and (top_kind == "title" or all_title_topn):
+                else:
+                    top_kind = ""
+                    src = ""
+                title_expand = ROUTER_TITLE_EXPAND and (all_title_topn or top_kind in ROUTER_TITLE_EXPAND_KINDS)
+                if items and (len(ctx) < ROUTER_QA_MIN_CTX_LEN or title_expand):
+                    if src and title_expand:
                         try:
                             payload_src = {"question": v, "k": ROUTER_TITLE_EXPAND_K, "sticky": False, "need_fallback": False, "source": src}
                             _add_trace(payload_src, trace_id)
