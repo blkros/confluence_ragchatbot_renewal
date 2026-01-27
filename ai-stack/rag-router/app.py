@@ -139,6 +139,8 @@ def _merge_map(base: dict, override: dict, merge: bool) -> dict:
 
 _MERGE_SYNONYMS = os.getenv("ROUTER_SYNONYMS_MERGE", "1").lower() not in ("0", "false", "no")
 _MERGE_ALIASES = os.getenv("ROUTER_ALIASES_MERGE", "1").lower() not in ("0", "false", "no")
+_MERGE_STOPWORDS = os.getenv("ROUTER_STOPWORDS_MERGE", "1").lower() not in ("0", "false", "no")
+_MERGE_FOCUS_KEYWORDS = os.getenv("ROUTER_FOCUS_KEYWORDS_MERGE", "1").lower() not in ("0", "false", "no")
 
 _syn_raw = _normalize_map(_load_json_map("ROUTER_SYNONYMS_JSON", "ROUTER_SYNONYMS_PATH"))
 _alias_raw = _normalize_map(_load_json_map("ROUTER_ALIASES_JSON", "ROUTER_ALIASES_PATH"))
@@ -158,7 +160,24 @@ _BASE_STOPWORDS = set(
     "\uAC1C\uC694 \uC18C\uAC1C \uC790\uC138\uD788"
     .split()
 )
+def _load_list_env(name: str) -> list[str]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return []
+    return [t for t in re.split(r"[,\s]+", raw) if t]
+
 _STOPWORDS = set(_BASE_STOPWORDS)
+_stop_env = set(_load_list_env("ROUTER_STOPWORDS"))
+if _stop_env:
+    _STOPWORDS = (_STOPWORDS | _stop_env) if _MERGE_STOPWORDS else set(_stop_env)
+
+_BASE_FOCUS_KEYWORDS = {
+    "도커", "docker", "컨테이너", "이미지", "compose", "쿠버네티스", "kubernetes", "k8s"
+}
+_FOCUS_KEYWORDS = set(_BASE_FOCUS_KEYWORDS)
+_focus_env = set(_load_list_env("ROUTER_FOCUS_KEYWORDS"))
+if _focus_env:
+    _FOCUS_KEYWORDS = (_FOCUS_KEYWORDS | _focus_env) if _MERGE_FOCUS_KEYWORDS else set(_focus_env)
 
 def _item_kind(it: dict) -> str:
     md = it.get("metadata") or {}
@@ -718,7 +737,7 @@ def _focus_query_for_source(query: str) -> str:
         return ""
     q_lower = query.lower()
     toks = [t for t in _tokens(query) if t not in _STOPWORDS]
-    for key in ("도커", "docker", "컨테이너", "이미지", "compose"):
+    for key in _FOCUS_KEYWORDS:
         if key in toks or key in q_lower:
             return key
     uniq = []

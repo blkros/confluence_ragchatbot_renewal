@@ -102,6 +102,7 @@ class Settings:
     ENABLE_RERANKER: bool = field(default_factory=lambda: _as_bool(os.getenv("ENABLE_RERANKER"), False))
     RERANKER_MODEL: str = field(default_factory=lambda: os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base"))
     RERANKER_TOP_N: int = field(default_factory=lambda: int(os.getenv("RERANKER_TOP_N", "5")))
+    RERANKER_CANDIDATES: int = field(default_factory=lambda: int(os.getenv("RERANKER_CANDIDATES", "60")))
 
     # -------------------------
     # LLM (vLLM/OpenAI 호환)

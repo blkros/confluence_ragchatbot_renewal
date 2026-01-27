@@ -24,6 +24,7 @@ import asyncio, hashlib
 from collections import Counter, defaultdict
 from src.retrieval.rerank import parse_query_intent, pick_for_injection
 from api.smart_router import router as smart_router
+from FlagEmbedding import FlagReranker
 
 # empty FAISS 빌드를 위한 보조들
 import faiss
@@ -1145,6 +1146,59 @@ def _to_mcp_keywords(q: str) -> str:
 logger = logging.getLogger("rag-proxy")
 log = logging.getLogger(__name__)
 
+_reranker = None
+_reranker_init_error = None
+
+def _get_reranker():
+    global _reranker, _reranker_init_error
+    if not bool(getattr(settings, "ENABLE_RERANKER", False)):
+        return None
+    if _reranker is None and _reranker_init_error is None:
+        try:
+            _reranker = FlagReranker(settings.RERANKER_MODEL, use_fp16=True)
+        except Exception as exc:
+            _reranker_init_error = str(exc)
+            log.warning("reranker init failed: %s", exc)
+            _reranker = None
+    return _reranker
+
+def _rerank_pool_hits(q: str, pool_hits: list[dict]) -> list[dict]:
+    if not pool_hits:
+        return pool_hits
+    reranker = _get_reranker()
+    if not reranker:
+        return pool_hits
+
+    cand_n = int(getattr(settings, "RERANKER_CANDIDATES", 60))
+    top_n = int(getattr(settings, "RERANKER_TOP_N", 5))
+    if cand_n <= 0 or top_n <= 0:
+        return pool_hits
+
+    ranked = sorted(pool_hits, key=lambda h: float(h.get("score") or 0.0), reverse=True)
+    candidates = ranked[: max(cand_n, top_n)]
+    if not candidates:
+        return pool_hits
+
+    pairs = []
+    for h in candidates:
+        md = h.get("metadata") or {}
+        text = h.get("text") or md.get("title") or ""
+        pairs.append((q, text))
+
+    try:
+        scores = reranker.compute_score(pairs, normalize=True)
+    except Exception as exc:
+        log.warning("reranker compute failed: %s", exc)
+        return pool_hits
+
+    for h, score in zip(candidates, scores):
+        h["rerank_score"] = float(score)
+
+    candidates.sort(key=lambda h: h.get("rerank_score", 0.0), reverse=True)
+    cand_ids = {id(h) for h in candidates}
+    rest = [h for h in ranked if id(h) not in cand_ids]
+    return candidates + rest
+
 # 전역 상태
 retriever = None
 vectorstore: Optional[FAISSStore] = None
@@ -2247,6 +2301,7 @@ async def query(payload: dict = Body(...)):
         pool_hits = [h for h in pool_hits if _hit_has_pid(h, forced_page_id)]
 
     # 3-E) rerank + 의도기반 주입선택
+    pool_hits = _rerank_pool_hits(q, pool_hits)
     chosen = pick_for_injection(q, pool_hits, k_default=int(k) if isinstance(k, int) else 5)
     had_pdf_ctx = any(_blocked_item(h) for h in (chosen or [])) \
            or any(_blocked_item(h) for h in (pool_hits or []))

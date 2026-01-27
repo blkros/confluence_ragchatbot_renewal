@@ -40,7 +40,8 @@ def rerank(query: str, hits: list[dict]) -> list[dict]:
             for kw in simple_keywords(query):
                 if kw and kw in st:
                     bonus += 0.01
-        h["rerank"] = float(h.get("score", 0.0)) + bonus
+        base = h.get("rerank_score", h.get("score", 0.0))
+        h["rerank"] = float(base) + bonus
     hits.sort(key=lambda x: x.get("rerank", x.get("score", 0.0)), reverse=True)
     return hits
 
