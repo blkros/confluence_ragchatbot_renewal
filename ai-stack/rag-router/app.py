@@ -86,6 +86,7 @@ ROUTER_PRECHECK_RAG = (os.getenv("ROUTER_PRECHECK_RAG", "0").lower() not in ("0"
 ROUTER_PRECHECK_K = int(os.getenv("ROUTER_PRECHECK_K", "3"))
 ROUTER_PRECHECK_TIMEOUT = float(os.getenv("ROUTER_PRECHECK_TIMEOUT", "2.0"))
 ROUTER_PRECHECK_CONNECT_TIMEOUT = float(os.getenv("ROUTER_PRECHECK_CONNECT_TIMEOUT", "1.5"))
+ROUTER_PRECHECK_RETRIES = int(os.getenv("ROUTER_PRECHECK_RETRIES", "1"))
 ROUTER_REWRITE = (os.getenv("ROUTER_REWRITE", "0").lower() not in ("0","false","no"))
 ROUTER_REWRITE_TURNS = int(os.getenv("ROUTER_REWRITE_TURNS", "6"))
 ROUTER_FORCE_KOREAN = (os.getenv("ROUTER_FORCE_KOREAN", "1").lower() not in ("0","false","no"))
@@ -851,49 +852,54 @@ def _has_local_items(items: list[dict]) -> bool:
     return False
 
 
-async def _precheck_rag_local(user_msgs: list[str], client: httpx.AsyncClient) -> bool:
+async def _precheck_rag_local(user_msgs: list[str]) -> bool:
     timeout = httpx.Timeout(
         connect=ROUTER_PRECHECK_CONNECT_TIMEOUT,
         read=ROUTER_PRECHECK_TIMEOUT,
         write=ROUTER_PRECHECK_TIMEOUT,
         pool=ROUTER_PRECHECK_CONNECT_TIMEOUT,
     )
-    for msg in user_msgs:
-        if not msg or not msg.strip():
-            continue
-        payload = {"question": msg, "k": ROUTER_PRECHECK_K, "need_fallback": False}
-        for attempt in range(2):
-            try:
-                resp = await client.post(f"{RAG}/query", json=payload, timeout=timeout)
+    limits = httpx.Limits(max_connections=1, max_keepalive_connections=0)
+    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+        for msg in user_msgs:
+            if not msg or not msg.strip():
+                continue
+            payload = {"question": msg, "k": ROUTER_PRECHECK_K, "need_fallback": False}
+            for attempt in range(max(1, ROUTER_PRECHECK_RETRIES + 1)):
                 try:
-                    data = resp.json()
-                except Exception as exc:
+                    resp = await client.post(f"{RAG}/query", json=payload)
+                    try:
+                        data = resp.json()
+                    except Exception as exc:
+                        if ROUTER_DEBUG:
+                            _dbg(
+                                "precheck_rag_error: q='%s' err=%s status=%s"
+                                % (msg[:60], f\"{exc.__class__.__name__}: {exc}\", resp.status_code)
+                            )
+                        data = None
+                    break
+                except (httpx.ConnectError, httpx.ReadTimeout) as exc:
                     if ROUTER_DEBUG:
                         _dbg(
-                            "precheck_rag_error: q='%s' err=%s status=%s"
-                            % (msg[:60], f"{exc.__class__.__name__}: {exc}", resp.status_code)
+                            "precheck_rag_error: q='%s' err=%s attempt=%s"
+                            % (msg[:60], f\"{exc.__class__.__name__}: {exc}\", attempt + 1)
                         )
+                    if attempt < ROUTER_PRECHECK_RETRIES:
+                        await asyncio.sleep(0.2)
                     data = None
-                break
-            except httpx.ConnectError as exc:
-                if ROUTER_DEBUG:
-                    _dbg(f"precheck_rag_error: q='{msg[:60]}' err=ConnectError: {exc} attempt={attempt+1}")
-                if attempt == 0:
-                    await asyncio.sleep(0.2)
-                data = None
-            except Exception as exc:
-                if ROUTER_DEBUG:
-                    _dbg(f"precheck_rag_error: q='{msg[:60]}' err={exc.__class__.__name__}: {exc}")
-                data = None
-                break
-        if not data:
-            continue
-        items = data.get("items") or []
-        local_ok = _has_local_items(items)
-        if ROUTER_DEBUG:
-            _dbg(f"precheck_rag: q='{msg[:60]}' hits={data.get('hits')} items={len(items)} local={local_ok}")
-        if local_ok:
-            return True
+                except Exception as exc:
+                    if ROUTER_DEBUG:
+                        _dbg(f\"precheck_rag_error: q='{msg[:60]}' err={exc.__class__.__name__}: {exc}\")
+                    data = None
+                    break
+            if not data:
+                continue
+            items = data.get("items") or []
+            local_ok = _has_local_items(items)
+            if ROUTER_DEBUG:
+                _dbg(f\"precheck_rag: q='{msg[:60]}' hits={data.get('hits')} items={len(items)} local={local_ok}\")
+            if local_ok:
+                return True
     return False
 
 app = FastAPI()
@@ -1437,7 +1443,7 @@ async def chat(req: ChatReq):
                 if variants:
                     precheck_msgs.extend(variants)
                 precheck_msgs = list(dict.fromkeys(precheck_msgs))
-                if await _precheck_rag_local(precheck_msgs, client):
+                if await _precheck_rag_local(precheck_msgs):
                     state, reason = "RAG_PREFERRED", "precheck_rag"
             _dbg(f"route_state: trace_id={trace_id} state={state} reason={reason}")
         if ROUTER_TRI_STATE_ENFORCE and state == "NO_RAG" and not (file_hint or spaces_hint):
