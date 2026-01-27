@@ -82,6 +82,9 @@ ROUTER_TRI_STATE_ENFORCE = (os.getenv("ROUTER_TRI_STATE_ENFORCE", "0").lower() n
 ROUTER_LLM_ROUTE = (os.getenv("ROUTER_LLM_ROUTE", "0").lower() not in ("0","false","no"))
 ROUTER_LLM_ROUTE_STRICT = (os.getenv("ROUTER_LLM_ROUTE_STRICT", "0").lower() not in ("0","false","no"))
 ROUTER_LLM_ROUTE_TIMEOUT = float(os.getenv("ROUTER_LLM_ROUTE_TIMEOUT", "3.0"))
+ROUTER_LLM_ROUTE_SCORE = (os.getenv("ROUTER_LLM_ROUTE_SCORE", "1").lower() not in ("0","false","no"))
+ROUTER_LLM_ROUTE_SCORE_THRESHOLD = int(os.getenv("ROUTER_LLM_ROUTE_SCORE_THRESHOLD", "7"))
+ROUTER_LLM_ROUTE_REQUIRED_THRESHOLD = int(os.getenv("ROUTER_LLM_ROUTE_REQUIRED_THRESHOLD", "9"))
 ROUTER_PRECHECK_RAG = (os.getenv("ROUTER_PRECHECK_RAG", "0").lower() not in ("0","false","no"))
 ROUTER_PRECHECK_K = int(os.getenv("ROUTER_PRECHECK_K", "3"))
 ROUTER_PRECHECK_TIMEOUT = float(os.getenv("ROUTER_PRECHECK_TIMEOUT", "2.0"))
@@ -93,14 +96,20 @@ ROUTER_FORCE_KOREAN = (os.getenv("ROUTER_FORCE_KOREAN", "1").lower() not in ("0"
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
-_RAG_REQUIRED_HINTS = re.compile(
-    r"(사내|내부|컨플|컨플루언스|confluence|정책|규정|계약|요금|가격|권한|"
-    r"운영|장애|로그|이력|보고|프로젝트|업무|고객사|스페이스|pageid|첨부|파일|문서)",
-    re.I,
+ROUTER_USE_HINTS = os.getenv("ROUTER_USE_HINTS", "0").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+    "",
 )
-_RAG_PREFERRED_HINTS = re.compile(
-    r"(요약|정리|목록|리스트|비교|차이|설명|가이드|사용법|매뉴얼|기능|구성|설치|설정|절차)",
-    re.I,
+_RAG_REQUIRED_HINTS_RAW = os.getenv("ROUTER_RAG_REQUIRED_HINTS", "").strip()
+_RAG_PREFERRED_HINTS_RAW = os.getenv("ROUTER_RAG_PREFERRED_HINTS", "").strip()
+_RAG_REQUIRED_HINTS = (
+    re.compile(_RAG_REQUIRED_HINTS_RAW, re.I) if _RAG_REQUIRED_HINTS_RAW else None
+)
+_RAG_PREFERRED_HINTS = (
+    re.compile(_RAG_PREFERRED_HINTS_RAW, re.I) if _RAG_PREFERRED_HINTS_RAW else None
 )
 _KO_CHAR_RE = re.compile(r"[\uAC00-\uD7A3]")
 _CJK_CHAR_RE = re.compile(r"[\u4E00-\u9FFF]")
@@ -179,13 +188,20 @@ _stop_env = set(_load_list_env("ROUTER_STOPWORDS"))
 if _stop_env:
     _STOPWORDS = (_STOPWORDS | _stop_env) if _MERGE_STOPWORDS else set(_stop_env)
 
-_BASE_FOCUS_KEYWORDS = {
-    "도커", "docker", "컨테이너", "이미지", "compose", "쿠버네티스", "kubernetes", "k8s"
-}
-_FOCUS_KEYWORDS = set(_BASE_FOCUS_KEYWORDS)
-_focus_env = set(_load_list_env("ROUTER_FOCUS_KEYWORDS"))
-if _focus_env:
-    _FOCUS_KEYWORDS = (_FOCUS_KEYWORDS | _focus_env) if _MERGE_FOCUS_KEYWORDS else set(_focus_env)
+ROUTER_USE_FOCUS_KEYWORDS = os.getenv("ROUTER_USE_FOCUS_KEYWORDS", "0").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+    "",
+)
+_FOCUS_KEYWORDS: set[str] = set()
+if ROUTER_USE_FOCUS_KEYWORDS:
+    _focus_env = set(_load_list_env("ROUTER_FOCUS_KEYWORDS"))
+    if _focus_env:
+        _FOCUS_KEYWORDS = (
+            (_FOCUS_KEYWORDS | _focus_env) if _MERGE_FOCUS_KEYWORDS else set(_focus_env)
+        )
 
 def _item_kind(it: dict) -> str:
     md = it.get("metadata") or {}
@@ -743,6 +759,8 @@ def _source_query_overlap(src: str, query: str) -> bool:
 def _focus_query_for_source(query: str) -> str:
     if not query:
         return ""
+    if not ROUTER_USE_FOCUS_KEYWORDS or not _FOCUS_KEYWORDS:
+        return ""
     q_lower = query.lower()
     toks = [t for t in _tokens(query) if t not in _STOPWORDS]
     for key in _FOCUS_KEYWORDS:
@@ -790,11 +808,11 @@ def _route_state(
         return "RAG_REQUIRED", "file_or_space_or_confluence"
     if _PAGEID_HINT_RE.search(user_msg or ""):
         return "RAG_REQUIRED", "pageid"
-    if _RAG_REQUIRED_HINTS.search(user_msg or ""):
+    if ROUTER_USE_HINTS and _RAG_REQUIRED_HINTS and _RAG_REQUIRED_HINTS.search(user_msg or ""):
         return "RAG_REQUIRED", "required_hints"
     if rag_followup and not topic_shift:
         return "RAG_PREFERRED", "rag_followup"
-    if _RAG_PREFERRED_HINTS.search(user_msg or ""):
+    if ROUTER_USE_HINTS and _RAG_PREFERRED_HINTS and _RAG_PREFERRED_HINTS.search(user_msg or ""):
         return "RAG_PREFERRED", "preferred_hints"
     if topic_shift:
         return "NO_RAG", "topic_shift"
@@ -807,14 +825,24 @@ async def _llm_route_state(
 ) -> tuple[str | None, str]:
     if not user_msg:
         return None, "llm_empty"
-    prompt = (
-        "You are a router that must output exactly one label.\n"
-        "Labels: RAG_REQUIRED, RAG_PREFERRED, NO_RAG.\n"
-        "RAG_REQUIRED: internal docs required (company policy, operations, logs, contracts, prices).\n"
-        "RAG_PREFERRED: general knowledge possible but docs improve quality.\n"
-        "NO_RAG: chit-chat, common knowledge, general dev knowledge.\n"
-        "Output only the label.\n"
-    )
+    if ROUTER_LLM_ROUTE_SCORE:
+        prompt = (
+            "You are a routing scorer. Return a single integer 0-10.\n"
+            "0 = NO_RAG (chit-chat, common knowledge, general dev knowledge).\n"
+            "10 = RAG_REQUIRED (needs internal docs: policy, operations, logs, contracts, prices, "
+            "confluence pages, internal files).\n"
+            "Scores 7-8 mean RAG_PREFERRED (docs improve quality).\n"
+            "Output only the number.\n"
+        )
+    else:
+        prompt = (
+            "You are a router that must output exactly one label.\n"
+            "Labels: RAG_REQUIRED, RAG_PREFERRED, NO_RAG.\n"
+            "RAG_REQUIRED: internal docs required (company policy, operations, logs, contracts, prices).\n"
+            "RAG_PREFERRED: general knowledge possible but docs improve quality.\n"
+            "NO_RAG: chit-chat, common knowledge, general dev knowledge.\n"
+            "Output only the label.\n"
+        )
     user = (
         f"question: {user_msg}\n"
         f"rag_followup: {rag_followup}\n"
@@ -836,6 +864,16 @@ async def _llm_route_state(
             r = await client.post(f"{OPENAI}/chat/completions", json=payload)
             data = r.json()
         text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        if ROUTER_LLM_ROUTE_SCORE:
+            match = re.search(r"\b(10|[0-9])\b", text)
+            if not match:
+                return None, "llm_invalid"
+            score = int(match.group(1))
+            if score >= ROUTER_LLM_ROUTE_REQUIRED_THRESHOLD:
+                return "RAG_REQUIRED", "llm_score"
+            if score >= ROUTER_LLM_ROUTE_SCORE_THRESHOLD:
+                return "RAG_PREFERRED", "llm_score"
+            return "NO_RAG", "llm_score"
         label = text.strip().upper()
         if label in {"RAG_REQUIRED", "RAG_PREFERRED", "NO_RAG"}:
             return label, "llm_route"
