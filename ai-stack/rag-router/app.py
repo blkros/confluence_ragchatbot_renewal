@@ -874,7 +874,7 @@ async def _precheck_rag_local(user_msgs: list[str]) -> bool:
                         if ROUTER_DEBUG:
                             _dbg(
                                 "precheck_rag_error: q='%s' err=%s status=%s"
-                                % (msg[:60], f\"{exc.__class__.__name__}: {exc}\", resp.status_code)
+                                % (msg[:60], f"{exc.__class__.__name__}: {exc}", resp.status_code)
                             )
                         data = None
                     break
@@ -882,14 +882,14 @@ async def _precheck_rag_local(user_msgs: list[str]) -> bool:
                     if ROUTER_DEBUG:
                         _dbg(
                             "precheck_rag_error: q='%s' err=%s attempt=%s"
-                            % (msg[:60], f\"{exc.__class__.__name__}: {exc}\", attempt + 1)
+                            % (msg[:60], f"{exc.__class__.__name__}: {exc}", attempt + 1)
                         )
                     if attempt < ROUTER_PRECHECK_RETRIES:
                         await asyncio.sleep(0.2)
                     data = None
                 except Exception as exc:
                     if ROUTER_DEBUG:
-                        _dbg(f\"precheck_rag_error: q='{msg[:60]}' err={exc.__class__.__name__}: {exc}\")
+                        _dbg(f"precheck_rag_error: q='{msg[:60]}' err={exc.__class__.__name__}: {exc}")
                     data = None
                     break
             if not data:
@@ -897,7 +897,7 @@ async def _precheck_rag_local(user_msgs: list[str]) -> bool:
             items = data.get("items") or []
             local_ok = _has_local_items(items)
             if ROUTER_DEBUG:
-                _dbg(f\"precheck_rag: q='{msg[:60]}' hits={data.get('hits')} items={len(items)} local={local_ok}\")
+                _dbg(f"precheck_rag: q='{msg[:60]}' hits={data.get('hits')} items={len(items)} local={local_ok}")
             if local_ok:
                 return True
     return False
