@@ -2504,6 +2504,12 @@ async def query(payload: dict = Body(...)):
         ("anchor_miss" in reasons and not local_ok) or
         ("acronym_miss" in reasons)
     )
+    explicit_src_filter = bool(src_filter) and not forced_page_id
+    if explicit_src_filter and allow_fallback:
+        allow_fallback = False
+        if NEED_FALLBACK:
+            NEED_FALLBACK = False
+            log.info("MCP fallback skipped due to explicit src_filter=%r", src_filter)
     
     if NEED_FALLBACK and not _should_use_mcp(q, allowed_spaces, space, reasons, local_ok):
         NEED_FALLBACK = False
@@ -2584,7 +2590,7 @@ async def query(payload: dict = Body(...)):
                     items, contexts = [], []
 
         # 비었을 때의 보조 폴백도 fast 버전으로
-        if not items and not DISABLE_INTERNAL_MCP and _should_use_mcp(q, client_spaces, space, reasons, local_ok):
+        if not items and (not explicit_src_filter) and not DISABLE_INTERNAL_MCP and _should_use_mcp(q, client_spaces, space, reasons, local_ok):
             fallback_attempted = True
             spaces_for_mcp = allowed_spaces or ([space] if space else None)
             if not spaces_for_mcp:
