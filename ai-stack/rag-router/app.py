@@ -859,7 +859,9 @@ async def _precheck_rag_local(user_msgs: list[str], client: httpx.AsyncClient) -
         try:
             resp = await client.post(f"{RAG}/query", json=payload, timeout=timeout)
             data = resp.json()
-        except Exception:
+        except Exception as exc:
+            if ROUTER_DEBUG:
+                _dbg(f"precheck_rag_error: q='{msg[:60]}' err={exc}")
             continue
         items = data.get("items") or []
         local_ok = _has_local_items(items)
@@ -1402,9 +1404,14 @@ async def chat(req: ChatReq):
                 and not file_hint
                 and not spaces_hint
             ):
-                precheck_msgs = [clean_user_msg]
+                precheck_msgs = []
+                if clean_user_msg:
+                    precheck_msgs.append(clean_user_msg)
                 if rewrite_q and rewrite_q != clean_user_msg:
                     precheck_msgs.append(rewrite_q)
+                if variants:
+                    precheck_msgs.extend(variants)
+                precheck_msgs = list(dict.fromkeys(precheck_msgs))
                 if await _precheck_rag_local(precheck_msgs, client):
                     state, reason = "RAG_PREFERRED", "precheck_rag"
             _dbg(f"route_state: trace_id={trace_id} state={state} reason={reason}")
