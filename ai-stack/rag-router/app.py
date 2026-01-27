@@ -1331,22 +1331,42 @@ async def chat(req: ChatReq):
     # 2-A) QA 성공
     if qa_json:
         primary_src = ""
-        if file_hint and qa_items:
-            qa_items, primary_src = _prefer_single_source(qa_items, clean_user_msg)
-            if primary_src and _LOCAL_SRC_RE.search(primary_src):
-                qa_urls = []
-            if ROUTER_DEBUG and primary_src:
-                _dbg(f"qa_source_filter: src='{primary_src}' items={len(qa_items)}")
+        if qa_items:
+            filtered_items, src = _prefer_single_source(qa_items, clean_user_msg)
+            if src and _LOCAL_SRC_RE.search(src):
+                primary_src = src
+                if file_hint:
+                    qa_items = filtered_items
+                    qa_urls = []
+                if ROUTER_DEBUG:
+                    _dbg(f"qa_source_filter: src='{primary_src}' items={len(qa_items)}")
         ctx_text = "\n\n".join(extract_texts(qa_items))[:MAX_CTX_CHARS]
         ctx_text = mark_lonely_numbers_as_total(ctx_text)
-        if file_hint and primary_src:
+        if primary_src:
             top_kind = ""
+            topn_items = qa_items[:ROUTER_TITLE_EXPAND_TOPN] if qa_items else []
             if qa_items:
                 md = (qa_items[0].get("metadata") or {}) if isinstance(qa_items[0], dict) else {}
-                top_kind = md.get("kind") or qa_items[0].get("kind") or ""
-            if len(ctx_text) < ROUTER_QA_MIN_CTX_LEN or top_kind == "title":
+                top_kind = (md.get("kind") or qa_items[0].get("kind") or "")
+            if topn_items:
+                title_topn = sum(
+                    1 for it in topn_items
+                    if (((it.get("metadata") or {}) if isinstance(it, dict) else {}).get("kind")
+                        or (it.get("kind") if isinstance(it, dict) else "")) in ROUTER_TITLE_EXPAND_KINDS
+                )
+                all_title_topn = (title_topn == len(topn_items))
+            else:
+                all_title_topn = False
+            title_expand = ROUTER_TITLE_EXPAND and (all_title_topn or top_kind in ROUTER_TITLE_EXPAND_KINDS)
+            if len(ctx_text) < ROUTER_QA_MIN_CTX_LEN or title_expand:
                 try:
-                    payload_src = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": primary_src}
+                    payload_src = {
+                        "question": clean_user_msg,
+                        "k": ROUTER_TITLE_EXPAND_K,
+                        "sticky": False,
+                        "need_fallback": False,
+                        "source": primary_src,
+                    }
                     _add_trace(payload_src, trace_id)
                     async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
                         j_src = (await client.post(f"{RAG}/query", json=payload_src)).json()
@@ -1423,12 +1443,13 @@ async def chat(req: ChatReq):
             try:
                 _dbg("qa_force_context_retry")
                 payload["messages"] = [{"role":"system","content":build_force_context_prompt(ctx_for_prompt)}] + [{"role":"user","content": clean_user_msg}]
-                r3 = await client.post(f"{OPENAI}/chat/completions", json=payload)
-                rj3 = r3.json()
+                async with httpx.AsyncClient(timeout=timeout) as retry_client:
+                    r3 = await retry_client.post(f"{OPENAI}/chat/completions", json=payload)
+                    rj3 = r3.json()
                 raw = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 cleaned = clean_llm_output(raw)
             except Exception as e:
-                _dbg(f"query_history_source_error: {e}")
+                _dbg(f"qa_force_context_error: {e}")
             if cleaned.strip() == "인덱스에 근거 없음":
                 fallback = _fallback_summary_from_ctx(ctx_for_prompt)
                 if fallback:
