@@ -850,21 +850,24 @@ def _has_local_items(items: list[dict]) -> bool:
     return False
 
 
-async def _precheck_rag_local(user_msg: str, client: httpx.AsyncClient) -> bool:
-    if not user_msg.strip():
-        return False
-    payload = {"question": user_msg, "k": ROUTER_PRECHECK_K, "need_fallback": False}
-    try:
-        timeout = httpx.Timeout(ROUTER_PRECHECK_TIMEOUT)
-        resp = await client.post(f"{RAG}/query", json=payload, timeout=timeout)
-        data = resp.json()
-    except Exception:
-        return False
-    items = data.get("items") or []
-    local_ok = _has_local_items(items)
-    if ROUTER_DEBUG:
-        _dbg(f"precheck_rag: hits={data.get('hits')} items={len(items)} local={local_ok}")
-    return local_ok
+async def _precheck_rag_local(user_msgs: list[str], client: httpx.AsyncClient) -> bool:
+    timeout = httpx.Timeout(ROUTER_PRECHECK_TIMEOUT)
+    for msg in user_msgs:
+        if not msg or not msg.strip():
+            continue
+        payload = {"question": msg, "k": ROUTER_PRECHECK_K, "need_fallback": False}
+        try:
+            resp = await client.post(f"{RAG}/query", json=payload, timeout=timeout)
+            data = resp.json()
+        except Exception:
+            continue
+        items = data.get("items") or []
+        local_ok = _has_local_items(items)
+        if ROUTER_DEBUG:
+            _dbg(f"precheck_rag: q='{msg[:60]}' hits={data.get('hits')} items={len(items)} local={local_ok}")
+        if local_ok:
+            return True
+    return False
 
 app = FastAPI()
 
@@ -1399,7 +1402,10 @@ async def chat(req: ChatReq):
                 and not file_hint
                 and not spaces_hint
             ):
-                if await _precheck_rag_local(clean_user_msg, client):
+                precheck_msgs = [clean_user_msg]
+                if rewrite_q and rewrite_q != clean_user_msg:
+                    precheck_msgs.append(rewrite_q)
+                if await _precheck_rag_local(precheck_msgs, client):
                     state, reason = "RAG_PREFERRED", "precheck_rag"
             _dbg(f"route_state: trace_id={trace_id} state={state} reason={reason}")
         if ROUTER_TRI_STATE_ENFORCE and state == "NO_RAG" and not (file_hint or spaces_hint):
