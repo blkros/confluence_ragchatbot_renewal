@@ -281,6 +281,72 @@ def _history_upload_source(messages: list[dict]) -> str:
     hint = " ".join(texts[-3:])
     return _match_upload_source_by_query(hint)
 
+def _normalize_upload_candidate(value: str) -> str:
+    if not value:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    s = s.replace("\\", "/")
+    if "/uploads/" in s:
+        idx = s.lower().rfind("/uploads/")
+        s = s[idx:] if idx >= 0 else s
+        if not s.startswith("/app/"):
+            if s.startswith("/uploads/"):
+                s = "/app" + s
+        return s
+    exts = (".pdf", ".pptx", ".ppt", ".xlsx", ".xls", ".csv", ".txt", ".md", ".log", ".docx")
+    if s.lower().endswith(exts):
+        matched = _match_upload_source_by_query(s)
+        return matched or f"/app/uploads/{s}"
+    return ""
+
+def _extract_upload_source_hint(raw_msgs: list[dict], rewrite_meta: dict) -> str:
+    candidates: list[object] = []
+    if isinstance(rewrite_meta, dict):
+        ent = rewrite_meta.get("entities") or {}
+        for k in ("SOURCE", "source", "file", "filename", "file_name", "attachment"):
+            v = ent.get(k)
+            if v:
+                candidates.append(v)
+    for m in raw_msgs or []:
+        for k in ("attachments", "files", "file"):
+            if k in m and m.get(k):
+                candidates.append(m.get(k))
+        content = m.get("content")
+        if isinstance(content, dict):
+            for k in ("attachments", "files", "file", "path", "name", "filename", "file_name"):
+                v = content.get(k)
+                if v:
+                    candidates.append(v)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    for k in ("path", "name", "filename", "file_name", "file", "source", "url"):
+                        v = part.get(k)
+                        if v:
+                            candidates.append(v)
+    flat: list[str] = []
+    def _push(v: object) -> None:
+        if not v:
+            return
+        if isinstance(v, (list, tuple)):
+            for x in v:
+                _push(x)
+        elif isinstance(v, dict):
+            for k in ("path", "name", "filename", "file_name", "url", "source"):
+                if v.get(k):
+                    _push(v.get(k))
+        else:
+            flat.append(str(v))
+    for c in candidates:
+        _push(c)
+    for c in flat:
+        s = _normalize_upload_candidate(c)
+        if s:
+            return s
+    return ""
+
 def _last_user_text(messages: list[dict]) -> str:
     for m in reversed(messages or []):
         if (m.get("role") or "") == "user":
@@ -1380,6 +1446,11 @@ async def chat(req: ChatReq):
         and len(clean_user_msg) <= FOLLOWUP_MAX_CHARS and not topic_shift
     spaces_hint: list[str] | None = None
     history_src = _history_upload_source(raw_msgs[:-1])
+    file_hint_src = _extract_upload_source_hint(raw_msgs, rewrite_meta) if file_hint else ""
+    if file_hint_src and not history_src:
+        history_src = file_hint_src
+    if file_hint_src:
+        _dbg(f"file_hint_src: src='{file_hint_src}'")
     if history_src and not _source_query_overlap(history_src, clean_user_msg):
         topic_shift = True
     if history_src and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
@@ -1710,6 +1781,8 @@ async def chat(req: ChatReq):
         for v in variants:
             try:
                 payload1 = {"question": v, "k": 10, "sticky": False, "need_fallback": False}
+                if file_hint_src:
+                    payload1["source"] = file_hint_src
                 if spaces_hint:
                     payload1["spaces"] = spaces_hint
                 _add_trace(payload1, trace_id)
@@ -1719,6 +1792,8 @@ async def chat(req: ChatReq):
 
             try:
                 payload2 = {"question": v, "k": 10, "sticky": True, "need_fallback": False}
+                if file_hint_src:
+                    payload2["source"] = file_hint_src
                 if spaces_hint:
                     payload2["spaces"] = spaces_hint
                 _add_trace(payload2, trace_id)
