@@ -75,6 +75,7 @@ ROUTER_TRI_STATE = (os.getenv("ROUTER_TRI_STATE", "0").lower() not in ("0","fals
 ROUTER_TRI_STATE_ENFORCE = (os.getenv("ROUTER_TRI_STATE_ENFORCE", "0").lower() not in ("0","false","no"))
 ROUTER_REWRITE = (os.getenv("ROUTER_REWRITE", "0").lower() not in ("0","false","no"))
 ROUTER_REWRITE_TURNS = int(os.getenv("ROUTER_REWRITE_TURNS", "6"))
+ROUTER_FORCE_KOREAN = (os.getenv("ROUTER_FORCE_KOREAN", "1").lower() not in ("0","false","no"))
 
 # === relevance gate ===
 _KO_EN_TOKEN = re.compile(r"[A-Za-z0-9]+|[\uAC00-\uD7A3]{2,}")
@@ -433,14 +434,44 @@ def _needs_korean_retry(text: str) -> bool:
     cjk = len(_CJK_CHAR_RE.findall(text))
     return cjk > 0
 
+async def _ensure_korean(text: str, req: "ChatReq") -> str:
+    if not ROUTER_FORCE_KOREAN or not _needs_korean_retry(text):
+        return text
+    sysmsg = {
+        "role": "system",
+        "content": (
+            "당신은 한국어 원어민처럼 자연스럽게 말하는 인공지능입니다. "
+            "지금부터 모든 대화는 한국어로만 진행합니다. "
+            "아래 내용을 의미를 유지한 채 자연스러운 한국어로만 번역하세요."
+        )
+    }
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [sysmsg, {"role": "user", "content": text}],
+        "stream": False,
+        "temperature": 0,
+        "max_tokens": _clamp_max_tokens(sysmsg["content"], [{"role":"user","content":text}], req.max_tokens),
+    }
+    async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+        try:
+            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            rj = r.json()
+            raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+            cleaned = sanitize(clean_llm_output(raw)) or text
+            return cleaned
+        except (httpx.RequestError, ValueError):
+            return text
+
 async def _llm_direct_answer(limited_msgs: list[dict], req: "ChatReq") -> str:
     now_kst = datetime.now(ZoneInfo(TZ)).strftime("%Y-%m-%d (%a) %H:%M:%S %Z")
     sysmsg = {
         "role": "system",
         "content": (
+            "당신은 한국어 원어민처럼 자연스럽게 말하는 인공지능입니다. "
+            "지금부터 모든 대화는 한국어로만 진행합니다. "
             f"현재 날짜와 시간: {now_kst}. "
-            "반드시 한국어로 답변하세요. "
             "문서 인덱스가 없어도 일반 상식·수학·날짜/시간 등은 직접 답하세요. "
+            "모든 답변은 반드시 한국어로만 작성해야 합니다. "
             "‘인덱스에 근거 없음’ 같은 말은 하지 마세요."
         )
     }
@@ -466,9 +497,10 @@ async def _llm_direct_answer(limited_msgs: list[dict], req: "ChatReq") -> str:
             content = sanitize(clean_llm_output(raw)) or "죄송해요. 지금은 답을 찾지 못했어요."
             if _needs_korean_retry(content):
                 sysmsg["content"] = (
+                    "당신은 한국어 원어민처럼 자연스럽게 말하는 인공지능입니다. "
+                    "지금부터 모든 대화는 한국어로만 진행합니다. "
                     f"현재 날짜와 시간: {now_kst}. "
-                    "반드시 한국어만 사용해 답변하세요. "
-                    "다른 언어(중국어/영어/일본어)는 사용하지 마세요. "
+                    "모든 답변은 반드시 한국어로만 작성해야 합니다. "
                     "질문과 무관한 내용은 답하지 마세요."
                 )
                 payload["messages"] = [sysmsg] + limited_msgs
@@ -476,6 +508,7 @@ async def _llm_direct_answer(limited_msgs: list[dict], req: "ChatReq") -> str:
                 rj3 = r3.json()
                 raw3 = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 content = sanitize(clean_llm_output(raw3)) or content
+            content = await _ensure_korean(content, req)
             return content
         except (httpx.RequestError, ValueError):
             return "죄송해요. 지금은 답을 찾지 못했어요."
@@ -1653,6 +1686,7 @@ async def chat(req: ChatReq):
             }, trace_id)
 
         content = await _llm_direct_answer(limited_msgs, req)
+        content = await _ensure_korean(content, req)
 
         if ROUTER_SHOW_CONTEXT_LABEL:
             content = "근거: 없음(LLM)\n" + content
@@ -1766,6 +1800,7 @@ async def chat(req: ChatReq):
             if fallback:
                 cleaned = fallback
     content = sanitize(cleaned) or "???? ?? ??"
+    content = await _ensure_korean(content, req)
     if not file_hint and best_ctx and _LOCAL_SRC_RE.search(best_ctx):
         file_hint = True
 
