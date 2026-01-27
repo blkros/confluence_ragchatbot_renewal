@@ -1,5 +1,6 @@
 .env
-**/.env
+ai-stack/.env
+mcp-confluence/.env
 
 # data / caches
 **/uploads/
