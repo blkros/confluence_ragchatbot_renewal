@@ -82,6 +82,9 @@ ROUTER_TRI_STATE_ENFORCE = (os.getenv("ROUTER_TRI_STATE_ENFORCE", "0").lower() n
 ROUTER_LLM_ROUTE = (os.getenv("ROUTER_LLM_ROUTE", "0").lower() not in ("0","false","no"))
 ROUTER_LLM_ROUTE_STRICT = (os.getenv("ROUTER_LLM_ROUTE_STRICT", "0").lower() not in ("0","false","no"))
 ROUTER_LLM_ROUTE_TIMEOUT = float(os.getenv("ROUTER_LLM_ROUTE_TIMEOUT", "3.0"))
+ROUTER_PRECHECK_RAG = (os.getenv("ROUTER_PRECHECK_RAG", "0").lower() not in ("0","false","no"))
+ROUTER_PRECHECK_K = int(os.getenv("ROUTER_PRECHECK_K", "3"))
+ROUTER_PRECHECK_TIMEOUT = float(os.getenv("ROUTER_PRECHECK_TIMEOUT", "2.0"))
 ROUTER_REWRITE = (os.getenv("ROUTER_REWRITE", "0").lower() not in ("0","false","no"))
 ROUTER_REWRITE_TURNS = int(os.getenv("ROUTER_REWRITE_TURNS", "6"))
 ROUTER_FORCE_KOREAN = (os.getenv("ROUTER_FORCE_KOREAN", "1").lower() not in ("0","false","no"))
@@ -838,6 +841,31 @@ async def _llm_route_state(
     except Exception:
         return None, "llm_error"
 
+
+def _has_local_items(items: list[dict]) -> bool:
+    for it in items or []:
+        src = (it.get("metadata") or {}).get("source") or it.get("source") or ""
+        if src and _LOCAL_SRC_RE.search(str(src)):
+            return True
+    return False
+
+
+async def _precheck_rag_local(user_msg: str, client: httpx.AsyncClient) -> bool:
+    if not user_msg.strip():
+        return False
+    payload = {"question": user_msg, "k": ROUTER_PRECHECK_K, "need_fallback": False}
+    try:
+        timeout = httpx.Timeout(ROUTER_PRECHECK_TIMEOUT)
+        resp = await client.post(f"{RAG}/query", json=payload, timeout=timeout)
+        data = resp.json()
+    except Exception:
+        return False
+    items = data.get("items") or []
+    local_ok = _has_local_items(items)
+    if ROUTER_DEBUG:
+        _dbg(f"precheck_rag: hits={data.get('hits')} items={len(items)} local={local_ok}")
+    return local_ok
+
 app = FastAPI()
 
 class Msg(BaseModel):
@@ -1364,6 +1392,15 @@ async def chat(req: ChatReq):
                     state, reason = llm_state, llm_reason
                 elif ROUTER_LLM_ROUTE_STRICT:
                     state, reason = "RAG_PREFERRED", "llm_fallback"
+            if (
+                ROUTER_PRECHECK_RAG
+                and state == "NO_RAG"
+                and not hard_required
+                and not file_hint
+                and not spaces_hint
+            ):
+                if await _precheck_rag_local(clean_user_msg, client):
+                    state, reason = "RAG_PREFERRED", "precheck_rag"
             _dbg(f"route_state: trace_id={trace_id} state={state} reason={reason}")
         if ROUTER_TRI_STATE_ENFORCE and state == "NO_RAG" and not (file_hint or spaces_hint):
             content = await _llm_direct_answer(limited_msgs, req)
