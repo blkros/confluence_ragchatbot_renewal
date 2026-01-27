@@ -862,20 +862,31 @@ async def _precheck_rag_local(user_msgs: list[str], client: httpx.AsyncClient) -
         if not msg or not msg.strip():
             continue
         payload = {"question": msg, "k": ROUTER_PRECHECK_K, "need_fallback": False}
-        try:
-            resp = await client.post(f"{RAG}/query", json=payload, timeout=timeout)
+        for attempt in range(2):
             try:
-                data = resp.json()
+                resp = await client.post(f"{RAG}/query", json=payload, timeout=timeout)
+                try:
+                    data = resp.json()
+                except Exception as exc:
+                    if ROUTER_DEBUG:
+                        _dbg(
+                            "precheck_rag_error: q='%s' err=%s status=%s"
+                            % (msg[:60], f"{exc.__class__.__name__}: {exc}", resp.status_code)
+                        )
+                    data = None
+                break
+            except httpx.ConnectError as exc:
+                if ROUTER_DEBUG:
+                    _dbg(f"precheck_rag_error: q='{msg[:60]}' err=ConnectError: {exc} attempt={attempt+1}")
+                if attempt == 0:
+                    await asyncio.sleep(0.2)
+                data = None
             except Exception as exc:
                 if ROUTER_DEBUG:
-                    _dbg(
-                        "precheck_rag_error: q='%s' err=%s status=%s"
-                        % (msg[:60], f"{exc.__class__.__name__}: {exc}", resp.status_code)
-                    )
-                continue
-        except Exception as exc:
-            if ROUTER_DEBUG:
-                _dbg(f"precheck_rag_error: q='{msg[:60]}' err={exc.__class__.__name__}: {exc}")
+                    _dbg(f"precheck_rag_error: q='{msg[:60]}' err={exc.__class__.__name__}: {exc}")
+                data = None
+                break
+        if not data:
             continue
         items = data.get("items") or []
         local_ok = _has_local_items(items)
