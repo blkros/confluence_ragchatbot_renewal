@@ -2572,7 +2572,7 @@ async def query(payload: dict = Body(...)):
                 pass
 
     # 장/조 질의면 필터 스킵
-    if items and not (chapter_no or article_no):
+    if items and not (chapter_no or article_no) and not explicit_src_filter:
         if not THIS_FILE_PAT.search(q):
             ctx_all_final = "\n".join(c["text"] for c in contexts)
             titles_meta_final = " ".join(
