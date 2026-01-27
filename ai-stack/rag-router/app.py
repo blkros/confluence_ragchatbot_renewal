@@ -79,6 +79,9 @@ ALLOW_LLM_FALLBACK = (os.getenv("ROUTER_ALLOW_LLM_FALLBACK", "1").lower() not in
 FOLLOWUP_MAX_CHARS = int(os.getenv("ROUTER_FOLLOWUP_MAX_CHARS", "120"))
 ROUTER_TRI_STATE = (os.getenv("ROUTER_TRI_STATE", "0").lower() not in ("0","false","no"))
 ROUTER_TRI_STATE_ENFORCE = (os.getenv("ROUTER_TRI_STATE_ENFORCE", "0").lower() not in ("0","false","no"))
+ROUTER_LLM_ROUTE = (os.getenv("ROUTER_LLM_ROUTE", "0").lower() not in ("0","false","no"))
+ROUTER_LLM_ROUTE_STRICT = (os.getenv("ROUTER_LLM_ROUTE_STRICT", "0").lower() not in ("0","false","no"))
+ROUTER_LLM_ROUTE_TIMEOUT = float(os.getenv("ROUTER_LLM_ROUTE_TIMEOUT", "3.0"))
 ROUTER_REWRITE = (os.getenv("ROUTER_REWRITE", "0").lower() not in ("0","false","no"))
 ROUTER_REWRITE_TURNS = int(os.getenv("ROUTER_REWRITE_TURNS", "6"))
 ROUTER_FORCE_KOREAN = (os.getenv("ROUTER_FORCE_KOREAN", "1").lower() not in ("0","false","no"))
@@ -792,6 +795,49 @@ def _route_state(
         return "NO_RAG", "topic_shift"
     return "NO_RAG", "default"
 
+async def _llm_route_state(
+    user_msg: str,
+    rag_followup: bool,
+    topic_shift: bool,
+) -> tuple[str | None, str]:
+    if not user_msg:
+        return None, "llm_empty"
+    prompt = (
+        "You are a router that must output exactly one label.\n"
+        "Labels: RAG_REQUIRED, RAG_PREFERRED, NO_RAG.\n"
+        "RAG_REQUIRED: internal docs required (company policy, operations, logs, contracts, prices).\n"
+        "RAG_PREFERRED: general knowledge possible but docs improve quality.\n"
+        "NO_RAG: chit-chat, common knowledge, general dev knowledge.\n"
+        "Output only the label.\n"
+    )
+    user = (
+        f"question: {user_msg}\n"
+        f"rag_followup: {rag_followup}\n"
+        f"topic_shift: {topic_shift}\n"
+    )
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "temperature": 0,
+        "max_tokens": 5,
+    }
+    try:
+        timeout = httpx.Timeout(ROUTER_LLM_ROUTE_TIMEOUT)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            data = r.json()
+        text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        label = text.strip().upper()
+        if label in {"RAG_REQUIRED", "RAG_PREFERRED", "NO_RAG"}:
+            return label, "llm_route"
+        return None, "llm_invalid"
+    except Exception:
+        return None, "llm_error"
+
 app = FastAPI()
 
 class Msg(BaseModel):
@@ -1304,6 +1350,20 @@ async def chat(req: ChatReq):
         reason = None
         if ROUTER_TRI_STATE:
             state, reason = _route_state(orig_user_msg, file_hint, spaces_hint, rag_followup, topic_shift)
+            # LLM router override (skip only for hard RAG triggers)
+            hard_required = bool(
+                file_hint
+                or spaces_hint
+                or _CONF_HOST_RE.search(orig_user_msg or "")
+                or _CONF_HINT_RE.search(orig_user_msg or "")
+                or _PAGEID_HINT_RE.search(orig_user_msg or "")
+            )
+            if ROUTER_LLM_ROUTE and not hard_required:
+                llm_state, llm_reason = await _llm_route_state(orig_user_msg, rag_followup, topic_shift)
+                if llm_state:
+                    state, reason = llm_state, llm_reason
+                elif ROUTER_LLM_ROUTE_STRICT:
+                    state, reason = "RAG_PREFERRED", "llm_fallback"
             _dbg(f"route_state: trace_id={trace_id} state={state} reason={reason}")
         if ROUTER_TRI_STATE_ENFORCE and state == "NO_RAG" and not (file_hint or spaces_hint):
             content = await _llm_direct_answer(limited_msgs, req)
