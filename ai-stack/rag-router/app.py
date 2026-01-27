@@ -85,6 +85,7 @@ ROUTER_LLM_ROUTE_TIMEOUT = float(os.getenv("ROUTER_LLM_ROUTE_TIMEOUT", "3.0"))
 ROUTER_PRECHECK_RAG = (os.getenv("ROUTER_PRECHECK_RAG", "0").lower() not in ("0","false","no"))
 ROUTER_PRECHECK_K = int(os.getenv("ROUTER_PRECHECK_K", "3"))
 ROUTER_PRECHECK_TIMEOUT = float(os.getenv("ROUTER_PRECHECK_TIMEOUT", "2.0"))
+ROUTER_PRECHECK_CONNECT_TIMEOUT = float(os.getenv("ROUTER_PRECHECK_CONNECT_TIMEOUT", "1.5"))
 ROUTER_REWRITE = (os.getenv("ROUTER_REWRITE", "0").lower() not in ("0","false","no"))
 ROUTER_REWRITE_TURNS = int(os.getenv("ROUTER_REWRITE_TURNS", "6"))
 ROUTER_FORCE_KOREAN = (os.getenv("ROUTER_FORCE_KOREAN", "1").lower() not in ("0","false","no"))
@@ -851,7 +852,12 @@ def _has_local_items(items: list[dict]) -> bool:
 
 
 async def _precheck_rag_local(user_msgs: list[str], client: httpx.AsyncClient) -> bool:
-    timeout = httpx.Timeout(ROUTER_PRECHECK_TIMEOUT)
+    timeout = httpx.Timeout(
+        connect=ROUTER_PRECHECK_CONNECT_TIMEOUT,
+        read=ROUTER_PRECHECK_TIMEOUT,
+        write=ROUTER_PRECHECK_TIMEOUT,
+        pool=ROUTER_PRECHECK_CONNECT_TIMEOUT,
+    )
     for msg in user_msgs:
         if not msg or not msg.strip():
             continue
