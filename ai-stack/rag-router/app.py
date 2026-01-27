@@ -62,6 +62,9 @@ ROUTER_SOURCES_MAX  = int(os.getenv("ROUTER_SOURCES_MAX", "5"))
 ROUTER_SHOW_CONTEXT_LABEL = (os.getenv("ROUTER_SHOW_CONTEXT_LABEL", "1").lower() not in ("0","false","no"))
 ROUTER_DEBUG = (os.getenv("ROUTER_DEBUG", "0").lower() not in ("0","false","no"))
 ROUTER_QA_MIN_CTX_LEN = int(os.getenv("ROUTER_QA_MIN_CTX_LEN", "120"))
+ROUTER_TITLE_EXPAND = (os.getenv("ROUTER_TITLE_EXPAND", "1").lower() not in ("0","false","no"))
+ROUTER_TITLE_EXPAND_TOPN = int(os.getenv("ROUTER_TITLE_EXPAND_TOPN", "3"))
+ROUTER_TITLE_EXPAND_K = int(os.getenv("ROUTER_TITLE_EXPAND_K", "60"))
 ROUTER_INGEST_WAIT_SEC = float(os.getenv("ROUTER_INGEST_WAIT_SEC", "8"))
 ROUTER_INGEST_WAIT_INTERVAL = float(os.getenv("ROUTER_INGEST_WAIT_INTERVAL", "1.0"))
 ROUTER_UPLOADS_DIR = os.getenv("ROUTER_UPLOADS_DIR", "/data/uploads")
@@ -1503,14 +1506,24 @@ async def chat(req: ChatReq):
                     top_kind = (top.get("metadata") or {}).get("kind") or top.get("kind")
                     top_text = (top.get("text") or "") if isinstance(top, dict) else ""
                     _dbg(f"query_resp: q='{v}' hits={qj.get('hits')} items={len(items)} ctx_texts={len(ctx_list)} top_kind={top_kind} top_len={len(str(top_text))}")
-                if items and len(ctx) < ROUTER_QA_MIN_CTX_LEN:
+                topn_items = items[:ROUTER_TITLE_EXPAND_TOPN] if items else []
+                if topn_items:
+                    title_topn = sum(
+                        1 for it in topn_items
+                        if (((it.get("metadata") or {}) if isinstance(it, dict) else {}).get("kind")
+                            or (it.get("kind") if isinstance(it, dict) else "")) == "title"
+                    )
+                    all_title_topn = (title_topn == len(topn_items))
+                else:
+                    all_title_topn = False
+                if items and (len(ctx) < ROUTER_QA_MIN_CTX_LEN or (ROUTER_TITLE_EXPAND and all_title_topn)):
                     top = items[0]
                     md = (top.get("metadata") or {}) if isinstance(top, dict) else {}
                     top_kind = md.get("kind") or top.get("kind")
                     src = _get_item_source(top)
-                    if top_kind == "title" and src:
+                    if src and (top_kind == "title" or all_title_topn):
                         try:
-                            payload_src = {"question": _file_stem_for_query(src) or v, "k": 50, "sticky": False, "need_fallback": False, "source": src}
+                            payload_src = {"question": v, "k": ROUTER_TITLE_EXPAND_K, "sticky": False, "need_fallback": False, "source": src}
                             _add_trace(payload_src, trace_id)
                             j_src = (await client.post(f"{RAG}/query", json=payload_src)).json()
                             items2 = (j_src.get("items") or j_src.get("contexts") or [])
