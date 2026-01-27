@@ -1372,7 +1372,8 @@ async def chat(req: ChatReq):
                 primary_src = src
                 if file_hint:
                     qa_items = filtered_items
-                    qa_urls = []
+                # local source should not inherit confluence URLs
+                qa_urls = []
                 if ROUTER_DEBUG:
                     _dbg(f"qa_source_filter: src='{primary_src}' items={len(qa_items)}")
         ctx_text = "\n\n".join(extract_texts(qa_items))[:MAX_CTX_CHARS]
@@ -1393,9 +1394,11 @@ async def chat(req: ChatReq):
             else:
                 all_title_topn = False
             title_expand = ROUTER_TITLE_EXPAND and (all_title_topn or top_kind in ROUTER_TITLE_EXPAND_KINDS)
-            if len(ctx_text) < ROUTER_QA_MIN_CTX_LEN or title_expand:
+            focus_q = _focus_query_for_source(clean_user_msg)
+            need_focus = bool(focus_q and focus_q != clean_user_msg)
+            if need_focus or len(ctx_text) < ROUTER_QA_MIN_CTX_LEN or title_expand:
                 try:
-                    focus_q = _focus_query_for_source(clean_user_msg) or clean_user_msg
+                    focus_q = focus_q or clean_user_msg
                     if ROUTER_DEBUG:
                         _dbg(f"qa_source_focus: q='{clean_user_msg}' focus='{focus_q}' src='{primary_src}'")
                     payload_src = {
