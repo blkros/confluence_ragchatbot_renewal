@@ -858,10 +858,18 @@ async def _precheck_rag_local(user_msgs: list[str], client: httpx.AsyncClient) -
         payload = {"question": msg, "k": ROUTER_PRECHECK_K, "need_fallback": False}
         try:
             resp = await client.post(f"{RAG}/query", json=payload, timeout=timeout)
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception as exc:
+                if ROUTER_DEBUG:
+                    _dbg(
+                        "precheck_rag_error: q='%s' err=%s status=%s"
+                        % (msg[:60], f"{exc.__class__.__name__}: {exc}", resp.status_code)
+                    )
+                continue
         except Exception as exc:
             if ROUTER_DEBUG:
-                _dbg(f"precheck_rag_error: q='{msg[:60]}' err={exc}")
+                _dbg(f"precheck_rag_error: q='{msg[:60]}' err={exc.__class__.__name__}: {exc}")
             continue
         items = data.get("items") or []
         local_ok = _has_local_items(items)
