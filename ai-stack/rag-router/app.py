@@ -301,6 +301,73 @@ def _normalize_upload_candidate(value: str) -> str:
         return matched or f"/app/uploads/{s}"
     return ""
 
+def _is_probable_source(value: str) -> bool:
+    if not value:
+        return False
+    s = str(value).strip()
+    if not s:
+        return False
+    if _LOCAL_SRC_RE.search(s):
+        return True
+    if re.search(r"pageid\s*=\s*\d+", s, re.I):
+        return True
+    if s.lower().startswith("confluence:"):
+        return True
+    if s.lower().startswith(("http://", "https://")):
+        return True
+    if re.search(r"\.(pdf|pptx|ppt|xlsx|xls|csv|txt|md|log|docx)\b", s, re.I):
+        return True
+    return False
+
+def _extract_sources_from_metadata(meta: dict) -> list[str]:
+    if not isinstance(meta, dict):
+        return []
+    candidates: list[object] = []
+    for k in ("source", "sources", "rag_source", "rag_sources", "file", "files", "attachments", "attachment"):
+        v = meta.get(k)
+        if v:
+            candidates.append(v)
+    flat: list[str] = []
+    def _push(v: object) -> None:
+        if not v:
+            return
+        if isinstance(v, (list, tuple, set)):
+            for x in v:
+                _push(x)
+        elif isinstance(v, dict):
+            for k in ("rag_source", "source", "path", "name", "filename", "file_name", "url"):
+                if v.get(k):
+                    _push(v.get(k))
+            for k in ("file", "data", "metadata"):
+                if v.get(k):
+                    _push(v.get(k))
+        else:
+            flat.append(str(v))
+    for c in candidates:
+        _push(c)
+
+    local: list[str] = []
+    other: list[str] = []
+    for c in flat:
+        norm = _normalize_upload_candidate(c)
+        if norm:
+            local.append(norm)
+            continue
+        if _is_probable_source(c):
+            other.append(str(c).strip())
+    ordered = local + other
+    out: list[str] = []
+    for s in ordered:
+        if s and s not in out:
+            out.append(s)
+    return out
+
+def _apply_src_filters(payload: dict, primary_src: str, src_set: list[str] | None) -> None:
+    if src_set:
+        payload["sources"] = src_set
+    if primary_src:
+        payload["source"] = primary_src
+
 def _extract_upload_source_hint(raw_msgs: list[dict], rewrite_meta: dict) -> str:
     candidates: list[object] = []
     if isinstance(rewrite_meta, dict):
@@ -1017,6 +1084,7 @@ class ChatReq(BaseModel):
     messages: List[Msg]
     stream: Optional[bool] = False
     max_tokens: Optional[int] = None
+    metadata: Optional[dict] = None
 
 def strip_reasoning(text: str) -> str:
     if not text:
@@ -1423,7 +1491,13 @@ async def chat(req: ChatReq):
     trace_id = str(uuid.uuid4())
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
     clean_user_msg = normalize_query_router(orig_user_msg)
+    metadata = req.metadata or {}
+    meta_sources = _extract_sources_from_metadata(metadata)
+    meta_primary_src = meta_sources[0] if meta_sources else ""
+    meta_src_set = meta_sources if len(meta_sources) > 1 else None
     file_hint = bool(_FILE_HINT_RE.search(orig_user_msg))
+    if meta_sources and not file_hint:
+        file_hint = True
     # limited_msgs can drop history; use raw req messages for source inference and rewrite.
     raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
     rewrite_q = ""
@@ -1447,8 +1521,20 @@ async def chat(req: ChatReq):
     spaces_hint: list[str] | None = None
     history_src = _history_upload_source(raw_msgs[:-1])
     file_hint_src = _extract_upload_source_hint(raw_msgs, rewrite_meta) if file_hint else ""
+    if meta_primary_src:
+        file_hint_src = meta_primary_src
+        if not history_src:
+            history_src = meta_primary_src
+    if file_hint and not file_hint_src:
+        fallback_src = history_src or _latest_upload_source()
+        if fallback_src:
+            file_hint_src = fallback_src
+            if not history_src:
+                history_src = fallback_src
     if file_hint_src and not history_src:
         history_src = file_hint_src
+    if meta_sources:
+        _dbg(f"meta_sources: srcs={meta_sources}")
     if file_hint_src:
         _dbg(f"file_hint_src: src='{file_hint_src}'")
     if history_src and not _source_query_overlap(history_src, clean_user_msg):
@@ -1783,6 +1869,7 @@ async def chat(req: ChatReq):
                 payload1 = {"question": v, "k": 10, "sticky": False, "need_fallback": False}
                 if file_hint_src:
                     payload1["source"] = file_hint_src
+                _apply_src_filters(payload1, file_hint_src, meta_src_set)
                 if spaces_hint:
                     payload1["spaces"] = spaces_hint
                 _add_trace(payload1, trace_id)
@@ -1794,6 +1881,7 @@ async def chat(req: ChatReq):
                 payload2 = {"question": v, "k": 10, "sticky": True, "need_fallback": False}
                 if file_hint_src:
                     payload2["source"] = file_hint_src
+                _apply_src_filters(payload2, file_hint_src, meta_src_set)
                 if spaces_hint:
                     payload2["spaces"] = spaces_hint
                 _add_trace(payload2, trace_id)

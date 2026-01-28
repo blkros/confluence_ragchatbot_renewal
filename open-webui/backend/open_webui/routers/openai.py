@@ -122,6 +122,20 @@ def openai_reasoning_model_handler(payload):
 
     return payload
 
+def _should_forward_metadata(api_config: dict, url: str) -> bool:
+    if not isinstance(api_config, dict):
+        api_config = {}
+    explicit = api_config.get("forward_metadata", None)
+    if explicit is True:
+        return True
+    if explicit is False:
+        return False
+    connection_type = str(api_config.get("connection_type", "")).lower()
+    if connection_type in ("rag-router", "rag_router", "internal", "proxy"):
+        return True
+    url_lower = str(url or "").lower()
+    return ("rag-router" in url_lower) or ("rag_router" in url_lower)
+
 def _parse_acronym_map(raw: str) -> dict:
     table = {}
     for pair in (raw or "").split(";"):
@@ -832,6 +846,8 @@ async def generate_chat_completion(
 
     url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
     key = request.app.state.config.OPENAI_API_KEYS[idx]
+    if metadata is not None and _should_forward_metadata(api_config, url):
+        payload["metadata"] = metadata
 
     # Check if model is a reasoning model that needs special handling
     if is_openai_reasoning_model(payload["model"]):
