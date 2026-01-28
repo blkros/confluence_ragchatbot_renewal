@@ -1323,7 +1323,7 @@ def sanitize(text: str) -> str:
     t = re.sub(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}\b', r'\1.xxx', t)
     return t
 
-def build_system_with_context(ctx_text: str, mode: str) -> str:
+def build_system_with_context(ctx_text: str, mode: str, force_summary: bool = False) -> str:
     if mode == "bulleted":
         style = (
             f"- 최대 {BULLETS_MAX}개 불릿으로 **구체적**으로 서술한다.\n"
@@ -1350,6 +1350,14 @@ def build_system_with_context(ctx_text: str, mode: str) -> str:
     )
     heading_hint = (f"- 가능하면 '{HEADING}' 아래로 정리한다.\n" if HEADING else "")
 
+    if force_summary:
+        guard_rule = (
+            "- 질문과 컨텍스트가 완전히 일치하지 않더라도 컨텍스트 내용을 요약한다.\n"
+            "- `인덱스에 근거 없음`은 출력하지 않는다.\n"
+        )
+    else:
+        guard_rule = "- 컨텍스트가 완전히 비었거나 무관하면 정확히 `인덱스에 근거 없음`만 출력한다.\n"
+
     return (
         "역할: 주어진 컨텍스트를 근거로 **정확하고 실무 친화적인** 한국어 답변을 작성한다.\n"
         "원칙:\n"
@@ -1359,7 +1367,7 @@ def build_system_with_context(ctx_text: str, mode: str) -> str:
         "- 내부 추론(<think> 등) 출력 금지, 최종 답만 출력한다.\n"
         "- <think> 태그를 사용하더라도 답변은 반드시 태그 밖에 출력한다.\n"
         + heading_hint + style + numeric_rules +
-        "- 컨텍스트가 완전히 비었거나 무관하면 정확히 `인덱스에 근거 없음`만 출력한다.\n"
+        guard_rule +
         "- 민감정보(비밀번호/토큰/IP 마지막 옥텟)는 마스킹한다.\n"
         "[컨텍스트 시작]\n"
         f"{ctx_text}\n"
@@ -1835,7 +1843,7 @@ async def chat(req: ChatReq):
         user_for_budget = next((m["content"] for m in reversed(limited_msgs) if m["role"]=="user"), "")
         ctx_for_prompt = _fit_ctx_to_budget(sys_prefix, user_for_budget, ctx_for_prompt)
 
-        system_prompt = build_system_with_context(ctx_for_prompt, mode)
+        system_prompt = build_system_with_context(ctx_for_prompt, mode, force_summary=bool(file_hint and ctx_for_prompt))
         max_tokens = _clamp_max_tokens(system_prompt, limited_msgs, req.max_tokens)
         payload = {
             "model": OPENAI_MODEL,
@@ -2200,7 +2208,7 @@ async def chat(req: ChatReq):
 
     # 컨텍스트를 토큰 예산에 맞춰 컷
     ctx_for_prompt = _fit_ctx_to_budget(sys_prefix, user_for_budget, full_ctx_for_check)
-    system_prompt = build_system_with_context(ctx_for_prompt, mode)
+    system_prompt = build_system_with_context(ctx_for_prompt, mode, force_summary=bool(file_hint and ctx_for_prompt))
     max_tokens = _clamp_max_tokens(system_prompt, limited_msgs, req.max_tokens)
 
     payload = {
