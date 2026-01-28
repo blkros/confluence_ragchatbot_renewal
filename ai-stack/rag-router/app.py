@@ -1317,9 +1317,11 @@ def generate_query_variants(q: str, limit: int | None = None) -> List[str]:
 def sanitize(text: str) -> str:
     if not text: return ""
     t = unescape(text.replace("&nbsp;", " "))
-    t = re.sub(r'(?i)(password|passwd|pwd|패스워드|비밀번호)\s*[:=]\s*\S+', r'\1: ******', t)
-    t = re.sub(r'(?i)(token|secret|key|키)\s*[:=]\s*[A-Za-z0-9\-_]{6,}', r'\1: <redacted>', t)
-    t = re.sub(r'(?i)(account|user(?:name)?|userid|계정|아이디)\s*[:=]\s*\S+', r'\1: <redacted>', t)
+    t = re.sub(r'(?i)(password|passwd|pwd|pass|pw|패스워드|비밀번호|비번|루트\s*비밀번호|root\s*password)\s*[:=]\s*\S+', r'\1: ******', t)
+    t = re.sub(r'(?i)(token|secret|key|키)\s*[:=]\s*\S{6,}', r'\1: <redacted>', t)
+    t = re.sub(r'(?i)(account|user(?:name)?|userid|id|계정|아이디)\s*[:=]\s*\S+', r'\1: <redacted>', t)
+    t = re.sub(r'(?i)\b([a-z0-9._%+-]+)\s*/\s*(\S{4,})\b', r'\1 / ******', t)
+    t = re.sub(r'(?i)\b(user|root)\s*/\s*(\S{4,})\b', r'\1 / ******', t)
     t = re.sub(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}\b', r'\1.xxx', t)
     return t
 
