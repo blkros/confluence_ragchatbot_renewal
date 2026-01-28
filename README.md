@@ -66,13 +66,12 @@ curl -s http://<server>:8088/v1/chat/completions \
   }'
 ```
 ### Runtime config (examples)
-`
-- LLM endpoint (OpenAI-compatible): http://<LLM_HOST>:8015/v1
-- LLM model: /model/Qwen2.5-14B-Instruct
-- Embedding model: BAAI/bge-m3
-- Upload dir: /app/uploads
-- FAISS index dir: /app/faiss_index
-`
+- LLM endpoint (OpenAI-compatible): `http://<LLM_HOST>:8015/v1`
+- LLM model: `/model/Qwen2.5-14B-Instruct`
+- Embedding model: `BAAI/bge-m3`
+- Upload dir: `/app/uploads`
+- FAISS index dir: `/app/faiss_index`
+
 ## Demo example (내일 채울거)
 **Q:** "업로드한 문서의 핵심을 5개로 정리해줘"  
 **A:** (여기 답변 5~8줄만, 민감정보 제거)
