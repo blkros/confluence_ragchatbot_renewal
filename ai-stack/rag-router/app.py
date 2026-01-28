@@ -2053,32 +2053,32 @@ async def chat(req: ChatReq):
                         ctx_hist = "\n\n---\n\n".join([t for t in ctx_list_hist if t])[:MAX_CTX_CHARS]
                         _dbg(f"query_history_source_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
                         if not items_hist:
-                        tokens = [t for t in _tokens(clean_user_msg) if t not in _STOPWORDS]
-                        stem_terms = [t for t in _tokens(_file_stem_for_query(resolved_src)) if t not in _STOPWORDS]
-                        overlap = [t for t in tokens if t in stem_terms]
-                        if not overlap:
-                            if ROUTER_DEBUG:
-                                _dbg(f"query_history_source_terms_skip: no overlap (tokens={tokens}, stem={stem_terms})")
-                        else:
-                            terms = list(dict.fromkeys(tokens + stem_terms))[:8]
-                            if not terms and ROUTER_DEBUG:
-                                _dbg(f"query_history_source_terms: empty (msg={clean_user_msg!r})")
-                            if terms:
-                                _dbg(f"query_history_source_terms: {terms}")
-                                items_hist, ctx_hist = await _query_source_with_terms(client, resolved_src, terms, k=20)
-                                _dbg(f"query_history_source_terms_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
-                    if not items_hist:
-                        stem_q = _file_stem_for_query(resolved_src)
-                        if stem_q and overlap:
-                            _dbg(f"query_history_source_fallback: q='{stem_q}'")
-                            items_hist, ctx_hist = await _query_source_with_terms(client, resolved_src, [stem_q], k=30)
-                            _dbg(f"query_history_source_fallback_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
-                    if items_hist and ctx_hist and (not best_ctx or len(ctx_hist) > len(best_ctx)):
-                        best_ctx = ctx_hist
-                        src_urls = []
-                        ctx_items = items_hist
-                        file_hint = True
-                        _dbg(f"query_history_source: src='{resolved_src}' ctx_len={len(best_ctx)} items={len(items_hist)}")
+                            tokens = [t for t in _tokens(clean_user_msg) if t not in _STOPWORDS]
+                            stem_terms = [t for t in _tokens(_file_stem_for_query(resolved_src)) if t not in _STOPWORDS]
+                            overlap = [t for t in tokens if t in stem_terms]
+                            if not overlap:
+                                if ROUTER_DEBUG:
+                                    _dbg(f"query_history_source_terms_skip: no overlap (tokens={tokens}, stem={stem_terms})")
+                            else:
+                                terms = list(dict.fromkeys(tokens + stem_terms))[:8]
+                                if not terms and ROUTER_DEBUG:
+                                    _dbg(f"query_history_source_terms: empty (msg={clean_user_msg!r})")
+                                if terms:
+                                    _dbg(f"query_history_source_terms: {terms}")
+                                    items_hist, ctx_hist = await _query_source_with_terms(client, resolved_src, terms, k=20)
+                                    _dbg(f"query_history_source_terms_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
+                            if not items_hist:
+                                stem_q = _file_stem_for_query(resolved_src)
+                                if stem_q and overlap:
+                                    _dbg(f"query_history_source_fallback: q='{stem_q}'")
+                                    items_hist, ctx_hist = await _query_source_with_terms(client, resolved_src, [stem_q], k=30)
+                                    _dbg(f"query_history_source_fallback_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
+                        if items_hist and ctx_hist and (not best_ctx or len(ctx_hist) > len(best_ctx)):
+                            best_ctx = ctx_hist
+                            src_urls = []
+                            ctx_items = items_hist
+                            file_hint = True
+                            _dbg(f"query_history_source: src='{resolved_src}' ctx_len={len(best_ctx)} items={len(items_hist)}")
             except Exception:
                 pass
         if file_hint and best_ctx:
