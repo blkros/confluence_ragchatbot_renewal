@@ -23,12 +23,6 @@ PoC verified on an on-prem GPU server; preparing for production hardening.
 - If context is insufficient (coverage/anchor_miss/etc.), **fallback to mcp-confluence** for additional context
 - **rag-router** generates the final answer with strict context gating + masking (or LLM direct answer when NO_RAG)
 
-## Quickstart (local upload only)
-1) `cp .env.example .env`
-2) `docker compose up -d`
-3) Open WebUI and upload a sample file (PDF/PPTX/XLSX/CSV)
-4) Ask a question about the uploaded file
-
 ## Upload Support (RAG)
 - PDF, DOCX, PPTX, XLSX, CSV, TXT, LOG, MD
 - PPTX: slide text + table extraction + speaker notes; optional image OCR
@@ -43,3 +37,42 @@ PoC verified on an on-prem GPU server; preparing for production hardening.
 - `ROUTER_INGEST_WAIT_INTERVAL` (default: 1.0)
 - `ROUTER_KO_MORPH=1` to enable Korean morphological tokenization (requires kiwipiepy)
 - `ROUTER_UPLOADS_DIR` (default: /data/uploads)
+
+## Quickstart
+
+### Services (host ports)
+- Open WebUI: `http://<server>:3000`
+- rag-router (OpenAI-compatible): `http://<server>:8088`
+- rag-proxy (RAG engine): `http://<server>:8080`
+- mcp-confluence: internal-only (not exposed to host)
+
+### Start
+1) `cp .env.example .env`
+2) `docker compose up -d`
+
+### Health checks
+```bash
+curl -s http://<server>:8080/health
+curl -s http://<server>:8088/v1/models
+```
+### Chat (via rag-router)
+```bash
+curl -s http://<server>:8088/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3-30b-a3b-fp8-router",
+    "messages": [{"role":"user","content":"업로드한 문서 요약해줘"}],
+    "stream": false
+  }'
+```
+### Runtime config (examples)
+`
+- LLM endpoint (OpenAI-compatible): http://<LLM_HOST>:8015/v1
+- LLM model: /model/Qwen2.5-14B-Instruct
+- Embedding model: BAAI/bge-m3
+- Upload dir: /app/uploads
+- FAISS index dir: /app/faiss_index
+`
+## Demo example (내일 채울거)
+**Q:** "업로드한 문서의 핵심을 5개로 정리해줘"  
+**A:** (여기 답변 5~8줄만, 민감정보 제거)
