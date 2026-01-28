@@ -376,6 +376,11 @@ def _extract_upload_source_hint(raw_msgs: list[dict], rewrite_meta: dict) -> str
             v = ent.get(k)
             if v:
                 candidates.append(v)
+        cons = rewrite_meta.get("constraints") or {}
+        for k in ("SOURCE", "source", "file", "filename", "file_name", "attachment"):
+            v = cons.get(k)
+            if v:
+                candidates.append(v)
     for m in raw_msgs or []:
         for k in ("attachments", "files", "file"):
             if k in m and m.get(k):
