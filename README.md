@@ -23,21 +23,6 @@ PoC verified on an on-prem GPU server; preparing for production hardening.
 - If context is insufficient (coverage/anchor_miss/etc.), **fallback to mcp-confluence** for additional context
 - **rag-router** generates the final answer with strict context gating + masking (or LLM direct answer when NO_RAG)
 
-## Upload Support (RAG)
-- PDF, DOCX, PPTX, XLSX, CSV, TXT, LOG, MD
-- PPTX: slide text + table extraction + speaker notes; optional image OCR
-- XLSX: header-aware row extraction with sheet metadata
-- DOCX: paragraph + table extraction
-
-## Optional Env
-- `PPTX_OCR=1` to OCR images in slides (requires Tesseract)
-- `XLSX_MAX_ROWS_PER_SHEET` (default: 2000)
-- `XLSX_MAX_COLS` (default: 50)
-- `ROUTER_INGEST_WAIT_SEC` (default: 8)
-- `ROUTER_INGEST_WAIT_INTERVAL` (default: 1.0)
-- `ROUTER_KO_MORPH=1` to enable Korean morphological tokenization (requires kiwipiepy)
-- `ROUTER_UPLOADS_DIR` (default: /data/uploads)
-
 ## Quickstart
 
 ### Services (host ports)
@@ -65,6 +50,22 @@ curl -s http://<server>:8088/v1/chat/completions \
     "stream": false
   }'
 ```
+
+## Upload Support (RAG)
+- PDF, DOCX, PPTX, XLSX, CSV, TXT, LOG, MD
+- PPTX: slide text + table extraction + speaker notes; optional image OCR
+- XLSX: header-aware row extraction with sheet metadata
+- DOCX: paragraph + table extraction
+
+## Optional Env
+- `PPTX_OCR=1` to OCR images in slides (requires Tesseract)
+- `XLSX_MAX_ROWS_PER_SHEET` (default: 2000)
+- `XLSX_MAX_COLS` (default: 50)
+- `ROUTER_INGEST_WAIT_SEC` (default: 8)
+- `ROUTER_INGEST_WAIT_INTERVAL` (default: 1.0)
+- `ROUTER_KO_MORPH=1` to enable Korean morphological tokenization (requires kiwipiepy)
+- `ROUTER_UPLOADS_DIR` (default: /data/uploads)
+
 ### Runtime config (examples)
 - LLM endpoint (OpenAI-compatible): `http://<LLM_HOST>:8015/v1`
 - LLM model: `/model/Qwen2.5-14B-Instruct`
