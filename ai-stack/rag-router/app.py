@@ -442,6 +442,30 @@ def _is_topic_shift(prev_text: str, curr_text: str) -> bool:
     thresh = float(os.getenv("ROUTER_HISTORY_SIM_THRESH", "0.2") or 0.2)
     return overlap < thresh
 
+def _is_followup_hint(text: str) -> bool:
+    if not text:
+        return False
+    norm = _normalize_query(text)
+    short_limit = int(os.getenv("ROUTER_HISTORY_SHORT_CHARS", "80") or 80)
+    if len(norm) > short_limit:
+        return False
+    hints = [
+        "더", "자세", "좀", "추가", "계속", "이어", "다시", "방금", "위에", "앞에",
+        "그거", "그것", "이거", "이것", "이걸", "이것도",
+    ]
+    has_hint = any(h in norm for h in hints)
+    return has_hint or len(norm) <= 12
+
+def _is_explicit_reset(text: str) -> bool:
+    if not text:
+        return False
+    norm = _normalize_query(text)
+    resets = [
+        "다른 문서", "새 문서", "새로운 문서", "문서 바꿔", "문서 변경", "주제 바꿔",
+        "컨플루언스", "confluence", "pageid", "페이지",
+    ]
+    return any(r in norm for r in resets)
+
 async def _resolve_source_from_index(client: httpx.AsyncClient, src: str) -> str:
     try:
         r = await client.get(f"{RAG}/index/sources")
@@ -1545,11 +1569,23 @@ async def chat(req: ChatReq):
     if history_src and not _source_query_overlap(history_src, clean_user_msg):
         topic_shift = True
     if history_src and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
-        _dbg(
-            "history_source_reset: src='%s' prev='%s' curr='%s'"
-            % (history_src, prev_user_msg[:80], clean_user_msg[:80])
-        )
-        history_src = ""
+        if _is_explicit_reset(clean_user_msg):
+            _dbg(
+                "history_source_reset: src='%s' prev='%s' curr='%s' reason=explicit_reset"
+                % (history_src, prev_user_msg[:80], clean_user_msg[:80])
+            )
+            history_src = ""
+        elif _is_followup_hint(clean_user_msg):
+            _dbg(
+                "history_source_keep: src='%s' prev='%s' curr='%s' reason=followup"
+                % (history_src, prev_user_msg[:80], clean_user_msg[:80])
+            )
+        else:
+            _dbg(
+                "history_source_reset: src='%s' prev='%s' curr='%s' reason=topic_shift"
+                % (history_src, prev_user_msg[:80], clean_user_msg[:80])
+            )
+            history_src = ""
     if history_src:
         _dbg(f"history_source: src='{history_src}'")
     _dbg(f"req: trace_id={trace_id} user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
