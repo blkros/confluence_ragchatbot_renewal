@@ -1566,6 +1566,13 @@ async def chat(req: ChatReq):
         _dbg(f"meta_sources: srcs={meta_sources}")
     if file_hint_src:
         _dbg(f"file_hint_src: src='{file_hint_src}'")
+    inferred_src = _match_upload_source_by_query(clean_user_msg)
+    if inferred_src and inferred_src != file_hint_src and _source_query_overlap(inferred_src, clean_user_msg):
+        file_hint = True
+        file_hint_src = inferred_src
+        if history_src != inferred_src:
+            history_src = inferred_src
+        _dbg(f"forced_infer_src: src='{inferred_src}' reason=query_match")
     if history_src and not _source_query_overlap(history_src, clean_user_msg):
         topic_shift = True
     if history_src and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
