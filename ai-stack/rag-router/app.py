@@ -2079,8 +2079,8 @@ async def chat(req: ChatReq):
                             ctx_items = items_hist
                             file_hint = True
                             _dbg(f"query_history_source: src='{resolved_src}' ctx_len={len(best_ctx)} items={len(items_hist)}")
-            except Exception:
-                pass
+                except Exception:
+                    pass
         if file_hint and best_ctx:
             # already have context; no need to infer or fallback.
             pass
