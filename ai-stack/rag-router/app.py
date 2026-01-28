@@ -2027,26 +2027,32 @@ async def chat(req: ChatReq):
             ctx_items = []
 
     if not best_ctx or len(best_ctx) < ROUTER_QA_MIN_CTX_LEN:
-        if history_src:
-            try:
-                async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
-                    resolved_src = await _resolve_source_from_index(client, history_src)
-                    if resolved_src != history_src:
-                        _dbg(f"query_history_source_resolve: src='{history_src}' -> '{resolved_src}'")
-                    _dbg(f"query_history_source_try: src='{resolved_src}' q='{clean_user_msg}'")
-                    payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": resolved_src}
-                    _add_trace(payload, trace_id)
-                    j_hist = await client.post(f"{RAG}/query", json=payload)
-                    j_hist = j_hist.json() if hasattr(j_hist, "json") else {}
-                    items_hist = (j_hist.get("items") or j_hist.get("contexts") or [])
-                    ctx_list_hist = (j_hist.get("context_texts")
-                                     or [c.get("text","") for c in (j_hist.get("contexts") or [])]
-                                     or [it.get("text","") for it in (j_hist.get("items") or [])])
-                    if items_hist:
-                        ctx_list_hist = extract_texts(items_hist)
-                    ctx_hist = "\n\n---\n\n".join([t for t in ctx_list_hist if t])[:MAX_CTX_CHARS]
-                    _dbg(f"query_history_source_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
-                    if not items_hist:
+        if file_hint and ctx_items:
+            if not best_ctx:
+                ctx_list_short = extract_texts(ctx_items)
+                best_ctx = "\n\n---\n\n".join([t for t in ctx_list_short if t])[:MAX_CTX_CHARS]
+            _dbg(f"query_keep_short_ctx: ctx_len={len(best_ctx)} items={len(ctx_items)} reason=file_hint")
+        else:
+            if history_src:
+                try:
+                    async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+                        resolved_src = await _resolve_source_from_index(client, history_src)
+                        if resolved_src != history_src:
+                            _dbg(f"query_history_source_resolve: src='{history_src}' -> '{resolved_src}'")
+                        _dbg(f"query_history_source_try: src='{resolved_src}' q='{clean_user_msg}'")
+                        payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": resolved_src}
+                        _add_trace(payload, trace_id)
+                        j_hist = await client.post(f"{RAG}/query", json=payload)
+                        j_hist = j_hist.json() if hasattr(j_hist, "json") else {}
+                        items_hist = (j_hist.get("items") or j_hist.get("contexts") or [])
+                        ctx_list_hist = (j_hist.get("context_texts")
+                                         or [c.get("text","") for c in (j_hist.get("contexts") or [])]
+                                         or [it.get("text","") for it in (j_hist.get("items") or [])])
+                        if items_hist:
+                            ctx_list_hist = extract_texts(items_hist)
+                        ctx_hist = "\n\n---\n\n".join([t for t in ctx_list_hist if t])[:MAX_CTX_CHARS]
+                        _dbg(f"query_history_source_resp: items={len(items_hist)} ctx_len={len(ctx_hist)}")
+                        if not items_hist:
                         tokens = [t for t in _tokens(clean_user_msg) if t not in _STOPWORDS]
                         stem_terms = [t for t in _tokens(_file_stem_for_query(resolved_src)) if t not in _STOPWORDS]
                         overlap = [t for t in tokens if t in stem_terms]
