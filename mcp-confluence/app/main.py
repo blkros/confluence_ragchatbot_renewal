@@ -667,10 +667,12 @@ api = FastAPI()
 @api.middleware("http")
 async def _strip_mcp_trailing_slash(request: Request, call_next):
     # httpx MCP client posts to /messages/ (trailing slash); normalize to /messages
-    # so the FastMCP router matches.
+    # so the FastMCP router matches. Also update raw_path for Starlette routing.
     path = request.url.path
     if path in ("/messages/", "/sse/"):
-        request.scope["path"] = path.rstrip("/")
+        new_path = path.rstrip("/")
+        request.scope["path"] = new_path
+        request.scope["raw_path"] = new_path.encode("ascii")
     return await call_next(request)
 
 @api.get("/health")
