@@ -669,7 +669,8 @@ def health():
     return {"status": "ok", "base_url": BASE_URL}
 
 # FastMCP SSE app already exposes /sse and /messages
-api.mount("/", mcp.sse_app())
+sse_app = mcp.sse_app()
+api.include_router(sse_app.router)
 
 if __name__ == "__main__":
     import os, uvicorn
