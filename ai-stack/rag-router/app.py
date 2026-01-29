@@ -2081,6 +2081,21 @@ async def chat(req: ChatReq):
 
             # 여기서 바로 평가/갱신 (바깥에 동일 코드 두지 말기)
             for qj in (j1, j2):
+                direct_answer = (qj.get("direct_answer") or "").strip()
+                if direct_answer:
+                    if ROUTER_SHOW_CONTEXT_LABEL:
+                        direct_answer = "근거: 없음(RAG)\n" + direct_answer
+                    return _attach_trace({
+                        "id": f"cmpl-{uuid.uuid4()}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": req.model,
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": direct_answer},
+                            "finish_reason": "stop"
+                        }],
+                    }, trace_id)
                 items = (qj.get("items") or qj.get("contexts") or [])
                 if file_hint and items:
                     filtered, primary_src = _prefer_single_source(items, clean_user_msg)
