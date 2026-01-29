@@ -719,6 +719,11 @@ async def _messages_slash_proxy(request: Request):
     header_dict = {k.decode(): v.decode() for k, v in headers}
     return Response(content=bytes(body), status_code=status_code, headers=header_dict)
 
+# Backward-compat: some clients still POST to /messages/ despite normalization.
+@api.post("/messages/")
+async def _messages_slash_proxy_alias(request: Request):
+    return await _messages_slash_proxy(request)
+
 if __name__ == "__main__":
     import os, uvicorn
     port = int(os.getenv("FASTMCP_PORT", "9000"))
