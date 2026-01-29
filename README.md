@@ -45,11 +45,20 @@ curl -s http://<server>:8088/v1/models
 curl -s http://<server>:8088/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3-30b-a3b-fp8-router",
+    "model": "/model/Qwen2.5-14B-Instruct",
     "messages": [{"role":"user","content":"업로드한 문서 요약해줘"}],
     "stream": false
   }'
 ```
+## Demo example
+**Q:** "리눅스 도커 세미나 내용 자세히 요약해줘"  
+**A (excerpt):**
+- 근거: 로컬 문서(RAG)
+- 세미나에서 리눅스 서버 운영 기본(터미널 기반 작업/자동화/권한 관리)을 다룸
+- Cron 스케줄링 개념과 형식(분/시/일/월/요일) 및 `crontab -e` 사용법을 설명
+- 예: 정해진 시각에 학습 스크립트 실행 및 로그 리다이렉션 방식 소개
+- 민감 경로/계정 정보는 마스킹 처리됨
+**Latency:** ~40s (measured via `time curl` on the on-prem host)
 
 ## Upload Support (RAG)
 - PDF, DOCX, PPTX, XLSX, CSV, TXT, LOG, MD
@@ -72,15 +81,3 @@ curl -s http://<server>:8088/v1/chat/completions \
 - Embedding model: `BAAI/bge-m3`
 - Upload dir: `/app/uploads`
 - FAISS index dir: `/app/faiss_index`
-
-## Demo example
-**Q:** "리눅스 도커 세미나 내용 자세히 요약해줘"  
-**A (excerpt):**
-- 근거: 로컬 문서(RAG)
-- 세미나에서 리눅스 서버 운영 기본(터미널 기반 작업/자동화/권한 관리)을 다룸
-- Cron 스케줄링 개념과 형식(분/시/일/월/요일) 및 `crontab -e` 사용법을 설명
-- 예: 정해진 시각에 학습 스크립트 실행 및 로그 리다이렉션 방식 소개
-- 민감 경로/계정 정보는 마스킹 처리됨
-
-**Latency:** ~40s (measured via `time curl` on the on-prem host)
-
