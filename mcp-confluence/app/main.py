@@ -663,11 +663,12 @@ def _html_search_fallback(client: httpx.Client, query: str, space: t.Optional[st
 from fastapi import FastAPI, Request
 from starlette.responses import Response
 
+# Standardize on no trailing slashes for all route registrations.
 api = FastAPI(redirect_slashes=False)
 
 @api.middleware("http")
 async def _strip_mcp_trailing_slash(request: Request, call_next):
-    # httpx MCP client posts to /messages/ (trailing slash); normalize to /messages
+    # Normalize trailing slashes to the standard no-slash route form.
     # so the FastMCP router matches. Also update raw_path for Starlette routing.
     path = request.url.path
     if path in ("/messages/", "/sse/"):
@@ -680,16 +681,28 @@ async def _strip_mcp_trailing_slash(request: Request, call_next):
 def health():
     return {"status": "ok", "base_url": BASE_URL}
 
-# FastMCP SSE app already exposes /sse and /messages
+# FastMCP SSE app already exposes /sse and /messages (no trailing slash).
 sse_app = mcp.sse_app()
 api.include_router(sse_app.router)
 
-@api.post("/messages/")
+@api.post("/messages")
 async def _messages_slash_proxy(request: Request):
-    # Some MCP clients POST to /messages/; proxy to /messages to avoid 404.
-    scope = dict(request.scope)
-    scope["path"] = "/messages"
-    scope["raw_path"] = b"/messages"
+    # Some MCP clients POST to /messages/; normalize and proxy to /messages.
+    scope = {
+        "type": "http",
+        "asgi": request.scope.get("asgi"),
+        "http_version": request.scope.get("http_version", "1.1"),
+        "method": request.method,
+        "scheme": request.url.scheme,
+        "path": "/messages",
+        "raw_path": b"/messages",
+        "query_string": request.scope.get("query_string", b""),
+        "headers": request.scope.get("headers", []),
+        "client": request.scope.get("client"),
+        "server": request.scope.get("server"),
+        "root_path": "",
+        "extensions": request.scope.get("extensions", {}),
+    }
     body = bytearray()
     status_code = 500
     headers = []
