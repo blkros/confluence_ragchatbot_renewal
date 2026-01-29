@@ -663,7 +663,7 @@ def _html_search_fallback(client: httpx.Client, query: str, space: t.Optional[st
 from fastapi import FastAPI, Request
 from starlette.responses import Response
 
-api = FastAPI()
+api = FastAPI(redirect_slashes=False)
 
 @api.middleware("http")
 async def _strip_mcp_trailing_slash(request: Request, call_next):
