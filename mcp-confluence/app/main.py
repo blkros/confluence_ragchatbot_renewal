@@ -662,6 +662,7 @@ def _html_search_fallback(client: httpx.Client, query: str, space: t.Optional[st
 # mcp-confluence/main.py (하단)
 from fastapi import FastAPI, Request
 from starlette.responses import Response
+from starlette.routing import Mount
 
 # Standardize on no trailing slashes for all route registrations.
 api = FastAPI(redirect_slashes=False)
@@ -685,23 +686,38 @@ def health():
 # FastMCP SSE app already exposes /sse and /messages (no trailing slash).
 sse_app = mcp.sse_app()
 sse_app.router.redirect_slashes = False
+_mcp_messages_app = None
+for _r in sse_app.routes:
+    if isinstance(_r, Mount) and _r.path == "/messages":
+        _mcp_messages_app = _r.app
+        break
 
 @api.post("/messages")
 async def _messages_slash_proxy(request: Request):
     # Some MCP clients POST to /messages/; normalize and proxy to /messages.
+    root_path = request.scope.get("root_path", "")
+    app = sse_app
+    path = "/messages"
+    raw_path = b"/messages"
+    if _mcp_messages_app is not None:
+        # Mirror Starlette's Mount behavior: strip mount path before app call.
+        app = _mcp_messages_app
+        root_path = f"{root_path}/messages" if root_path else "/messages"
+        path = "/"
+        raw_path = b"/"
     scope = {
         "type": "http",
         "asgi": request.scope.get("asgi"),
         "http_version": request.scope.get("http_version", "1.1"),
         "method": request.method,
         "scheme": request.url.scheme,
-        "path": "/messages",
-        "raw_path": b"/messages",
+        "path": path,
+        "raw_path": raw_path,
         "query_string": request.scope.get("query_string", b""),
         "headers": request.scope.get("headers", []),
         "client": request.scope.get("client"),
         "server": request.scope.get("server"),
-        "root_path": "",
+        "root_path": root_path,
         "extensions": request.scope.get("extensions", {}),
     }
     body = bytearray()
@@ -716,7 +732,7 @@ async def _messages_slash_proxy(request: Request):
         elif message["type"] == "http.response.body":
             body.extend(message.get("body", b""))
 
-    await sse_app(scope, request.receive, send)
+    await app(scope, request.receive, send)
     header_dict = {k.decode(): v.decode() for k, v in headers}
     return Response(content=bytes(body), status_code=status_code, headers=header_dict)
 
