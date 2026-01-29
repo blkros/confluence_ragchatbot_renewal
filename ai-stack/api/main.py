@@ -2025,6 +2025,22 @@ async def query(payload: dict = Body(...)):
             page = await _mcp_page_text_http(forced_page_id)
             if page:
                 mcp_results = [page]
+            else:
+                return {
+                    "hits": 0,
+                    "items": [],
+                    "contexts": [],
+                    "context_texts": [],
+                    "documents": [],
+                    "chunks": [],
+                    "source_urls": [],
+                    "direct_answer": "페이지 내용을 읽어올 수 없습니다.",
+                    "notes": {
+                        "forced_confluence": True,
+                        "mcp_text_missing": True,
+                        "fallback_used": True,
+                    },
+                }
 
         if mcp_results and not _mcp_results_have_text(mcp_results):
             log.info("MCP results missing text: q=%r page_id=%s", q, forced_page_id)
