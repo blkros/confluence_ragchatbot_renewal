@@ -1867,9 +1867,9 @@ async def query(payload: dict = Body(...)):
         log.info("trace_id=%s q=%r", trace_id, q[:160])
 
     # [ADD] pageId 힌트만 추출(잠금 아님)
-    page_id = (payload or {}).get("pageId")
+    page_id = (payload or {}).get("pageId") or (payload or {}).get("page_id") or (payload or {}).get("pageid")
     if not page_id:
-        m_pid = re.search(r"pageId\s*=\s*(\d+)", q)
+        m_pid = re.search(r"(?:pageid|page_id)\s*=\s*(\d+)", q, re.I)
         if m_pid:
             page_id = m_pid.group(1)
     page_id = str(page_id) if page_id is not None else None
@@ -1956,7 +1956,8 @@ async def query(payload: dict = Body(...)):
             mcp_results = await _mcp_search_fast(
                 q, forced_page_id=forced_page_id, spaces_for_mcp=spaces_for_mcp
             )
-            mcp_results = _filter_mcp_by_strong_tokens(mcp_results, q)
+            if not forced_page_id:
+                mcp_results = _filter_mcp_by_strong_tokens(mcp_results, q)
             mcp_results = _rerank_mcp_results(q, mcp_results)
         except Exception as e:
             mcp_results = []
@@ -2527,7 +2528,8 @@ async def query(payload: dict = Body(...)):
             mcp_results = await _mcp_search_fast(
                 q, forced_page_id=forced_page_id, spaces_for_mcp=spaces_for_mcp
             )
-            mcp_results = _filter_mcp_by_strong_tokens(mcp_results, q)
+            if not forced_page_id:
+                mcp_results = _filter_mcp_by_strong_tokens(mcp_results, q)
             mcp_results = _rerank_mcp_results(q, mcp_results)
         except Exception as e:
             log.error("MCP fallback fast failed: %s", "".join(traceback.format_exception(e)))
@@ -2599,7 +2601,8 @@ async def query(payload: dict = Body(...)):
             mcp_results = await _mcp_search_fast(
                 q, forced_page_id=forced_page_id, spaces_for_mcp=spaces_for_mcp
             )
-            mcp_results = _filter_mcp_by_strong_tokens(mcp_results, q)
+            if not forced_page_id:
+                mcp_results = _filter_mcp_by_strong_tokens(mcp_results, q)
             mcp_results = _rerank_mcp_results(q, mcp_results)
             if forced_page_id and mcp_results:
                 mcp_results = [r for r in mcp_results
