@@ -921,6 +921,15 @@ def _source_query_overlap(src: str, query: str) -> bool:
 def _focus_query_for_source(query: str) -> str:
     if not query:
         return ""
+    norm = _normalize_query(query).lower()
+    docker_terms = [
+        "도커", "docker", "container", "컨테이너", "image", "이미지", "dockerfile",
+        "compose", "docker compose", "docker run", "docker build", "docker ps",
+        "docker stop", "docker pull", "docker push", "볼륨", "volume", "mount",
+        "포트", "port", "네트워크", "network",
+    ]
+    if any(t in norm for t in docker_terms):
+        return "도커 컨테이너 이미지 docker dockerfile docker compose docker run"
     if not ROUTER_USE_FOCUS_KEYWORDS or not _FOCUS_KEYWORDS:
         return ""
     q_lower = query.lower()
