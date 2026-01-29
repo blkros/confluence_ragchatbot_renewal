@@ -2,7 +2,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
-import shutil, os, logging, re, uuid, json
+import shutil, os, logging, re, uuid, json, math
 from fastapi.responses import RedirectResponse
 from fastapi import Body
 import time
@@ -528,6 +528,13 @@ def _mcp_results_to_items(mcp_results: list[dict], k: int) -> tuple[list[dict], 
             ))
     return items, contexts, up_docs
 
+def _mcp_results_have_text(results: list[dict]) -> bool:
+    for r in results or []:
+        body = r.get("body") or r.get("excerpt") or r.get("text") or ""
+        if str(body).strip():
+            return True
+    return False
+
 
 
 # 빠른 MCP 폴백: 여러 후보 질의를 '동시에' 던지고 '첫 성공'만 사용
@@ -1042,6 +1049,12 @@ def _rerank_mcp_results(q: str, results: list[dict]) -> list[dict]:
         ntitle = _norm_ko_text(title)
         title_u = title.upper()
         s = float(r.get("score") or 0.0)
+        try:
+            ver = int(r.get("version") or 0)
+        except Exception:
+            ver = 0
+        if ver > 0:
+            s += min(0.8, (math.log10(ver + 1) / 2.0))
 
         # ① 제목 정확/부분 일치
         if keyphrase and ntitle:
@@ -2013,6 +2026,10 @@ async def query(payload: dict = Body(...)):
             if page:
                 mcp_results = [page]
 
+        if mcp_results and not _mcp_results_have_text(mcp_results):
+            log.info("MCP results missing text: q=%r page_id=%s", q, forced_page_id)
+            mcp_results = []
+
         # sticky 처리
         if mcp_results and STICKY_AFTER_MCP:
             first = mcp_results[0]
@@ -2065,7 +2082,7 @@ async def query(payload: dict = Body(...)):
                 "documents": [],
                 "chunks": [],
                 "source_urls": [],
-                "direct_answer": "주어진 정보에서 질문에 대한 정보를 찾을 수 없습니다",
+                "direct_answer": "페이지 내용을 읽어올 수 없습니다.",
                 "notes": {
                     "forced_confluence": True,
                     "no_results": True
@@ -2587,6 +2604,24 @@ async def query(payload: dict = Body(...)):
             page = await _mcp_page_text_http(forced_page_id)
             if page:
                 mcp_results = [page]
+
+        if mcp_results and not _mcp_results_have_text(mcp_results):
+            log.info("MCP results missing text: q=%r page_id=%s", q, forced_page_id)
+            mcp_results = []
+            return {
+                "hits": 0,
+                "items": [],
+                "contexts": [],
+                "context_texts": [],
+                "documents": [],
+                "chunks": [],
+                "source_urls": [],
+                "direct_answer": "페이지 내용을 읽어올 수 없습니다.",
+                "notes": {
+                    "mcp_text_missing": True,
+                    "fallback_used": True,
+                },
+            }
 
         if mcp_results and STICKY_AFTER_MCP:
             first = mcp_results[0]
