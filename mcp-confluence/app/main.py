@@ -660,9 +660,18 @@ def _html_search_fallback(client: httpx.Client, query: str, space: t.Optional[st
 
 
 # mcp-confluence/main.py (하단)
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 api = FastAPI()
+
+@api.middleware("http")
+async def _strip_mcp_trailing_slash(request: Request, call_next):
+    # httpx MCP client posts to /messages/ (trailing slash); normalize to /messages
+    # so the FastMCP router matches.
+    path = request.url.path
+    if path in ("/messages/", "/sse/"):
+        request.scope["path"] = path.rstrip("/")
+    return await call_next(request)
 
 @api.get("/health")
 def health():
