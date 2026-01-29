@@ -25,6 +25,7 @@ from collections import Counter, defaultdict
 from src.retrieval.rerank import parse_query_intent, pick_for_injection
 from api.smart_router import router as smart_router
 from FlagEmbedding import FlagReranker
+import httpx
 
 # empty FAISS 빌드를 위한 보조들
 import faiss
@@ -440,6 +441,41 @@ def _spaces_from_env():
     return [s.strip().upper() for s in raw.split(",") if s.strip()] or None
 
 ENV_SPACES = _spaces_from_env()
+
+def _mcp_http_base() -> str:
+    url = os.getenv("MCP_URL", "").strip()
+    if not url:
+        return ""
+    if "/sse" in url:
+        url = url.split("/sse", 1)[0]
+    return url.rstrip("/")
+
+async def _mcp_page_text_http(page_id: str) -> dict | None:
+    if not page_id:
+        return None
+    base = _mcp_http_base()
+    if not base:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=float(MCP_TIMEOUT)) as client:
+            r = await client.get(f"{base}/tool/page_text/{page_id}")
+        if r.status_code != 200:
+            log.info("MCP page_text http=%s page_id=%s", r.status_code, page_id)
+            return None
+        j = r.json() if r.content else {}
+        text = (j.get("text") or "").strip()
+        if not text:
+            return None
+        return {
+            "id": str(j.get("page_id") or page_id),
+            "title": (j.get("title") or "").strip(),
+            "space": (j.get("space") or "").strip(),
+            "url": (j.get("url") or "").strip(),
+            "text": text,
+        }
+    except Exception as e:
+        log.warning("MCP page_text failed for page_id=%s: %s", page_id, e)
+        return None
 
 def _resolve_allowed_spaces(client_spaces: list | None) -> list | None:
     cs = [s.strip().upper() for s in (client_spaces or []) if isinstance(s, str) and s.strip()]
@@ -1958,6 +1994,8 @@ async def query(payload: dict = Body(...)):
             )
             if not forced_page_id:
                 mcp_results = _filter_mcp_by_strong_tokens(mcp_results, q)
+                if not mcp_results:
+                    log.info("forced MCP (confluence hint) no strong match: q=%r", q)
             mcp_results = _rerank_mcp_results(q, mcp_results)
         except Exception as e:
             mcp_results = []
@@ -1970,6 +2008,10 @@ async def query(payload: dict = Body(...)):
                 r for r in mcp_results
                 if _url_has_page_id(r.get("url"), forced_page_id) or str(r.get("id") or "") == forced_page_id
             ]
+        if forced_page_id and not mcp_results:
+            page = await _mcp_page_text_http(forced_page_id)
+            if page:
+                mcp_results = [page]
 
         # sticky 처리
         if mcp_results and STICKY_AFTER_MCP:
@@ -2530,6 +2572,8 @@ async def query(payload: dict = Body(...)):
             )
             if not forced_page_id:
                 mcp_results = _filter_mcp_by_strong_tokens(mcp_results, q)
+                if not mcp_results:
+                    log.info("MCP fallback no strong match: q=%r", q)
             mcp_results = _rerank_mcp_results(q, mcp_results)
         except Exception as e:
             log.error("MCP fallback fast failed: %s", "".join(traceback.format_exception(e)))
@@ -2539,6 +2583,10 @@ async def query(payload: dict = Body(...)):
                 r for r in mcp_results
                 if _url_has_page_id(r.get("url"), forced_page_id) or str(r.get("id") or "") == forced_page_id
             ]
+        if forced_page_id and not mcp_results:
+            page = await _mcp_page_text_http(forced_page_id)
+            if page:
+                mcp_results = [page]
 
         if mcp_results and STICKY_AFTER_MCP:
             first = mcp_results[0]
