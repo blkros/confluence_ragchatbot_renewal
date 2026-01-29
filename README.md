@@ -73,6 +73,14 @@ curl -s http://<server>:8088/v1/chat/completions \
 - Upload dir: `/app/uploads`
 - FAISS index dir: `/app/faiss_index`
 
-## Demo example (내일 채울거)
-**Q:** "업로드한 문서의 핵심을 5개로 정리해줘"  
-**A:** (여기 답변 5~8줄만, 민감정보 제거)
+## Demo example
+**Q:** "리눅스 도커 세미나 내용 자세히 요약해줘"  
+**A (excerpt):**
+- 근거: 로컬 문서(RAG)
+- 세미나에서 리눅스 서버 운영 기본(터미널 기반 작업/자동화/권한 관리)을 다룸
+- Cron 스케줄링 개념과 형식(분/시/일/월/요일) 및 `crontab -e` 사용법을 설명
+- 예: 정해진 시각에 학습 스크립트 실행 및 로그 리다이렉션 방식 소개
+- 민감 경로/계정 정보는 마스킹 처리됨
+
+**Latency:** ~40s (measured via `time curl` on the on-prem host)
+
