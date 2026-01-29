@@ -661,6 +661,7 @@ def _html_search_fallback(client: httpx.Client, query: str, space: t.Optional[st
 
 # mcp-confluence/main.py (하단)
 from fastapi import FastAPI, Request
+from starlette.responses import Response
 
 api = FastAPI()
 
@@ -682,6 +683,28 @@ def health():
 # FastMCP SSE app already exposes /sse and /messages
 sse_app = mcp.sse_app()
 api.include_router(sse_app.router)
+
+@api.post("/messages/")
+async def _messages_slash_proxy(request: Request):
+    # Some MCP clients POST to /messages/; proxy to /messages to avoid 404.
+    scope = dict(request.scope)
+    scope["path"] = "/messages"
+    scope["raw_path"] = b"/messages"
+    body = bytearray()
+    status_code = 500
+    headers = []
+
+    async def send(message):
+        nonlocal status_code, headers
+        if message["type"] == "http.response.start":
+            status_code = message["status"]
+            headers = message.get("headers", [])
+        elif message["type"] == "http.response.body":
+            body.extend(message.get("body", b""))
+
+    await sse_app(scope, request.receive, send)
+    header_dict = {k.decode(): v.decode() for k, v in headers}
+    return Response(content=bytes(body), status_code=status_code, headers=header_dict)
 
 if __name__ == "__main__":
     import os, uvicorn
