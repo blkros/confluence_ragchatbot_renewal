@@ -2036,6 +2036,21 @@ async def query(payload: dict = Body(...)):
                     "source_urls": [],
                     "direct_answer": "페이지 내용을 읽어올 수 없습니다.",
                     "notes": {
+                        "mcp_text_missing": True,
+                        "fallback_used": True,
+                    },
+                }
+            else:
+                return {
+                    "hits": 0,
+                    "items": [],
+                    "contexts": [],
+                    "context_texts": [],
+                    "documents": [],
+                    "chunks": [],
+                    "source_urls": [],
+                    "direct_answer": "페이지 내용을 읽어올 수 없습니다.",
+                    "notes": {
                         "forced_confluence": True,
                         "mcp_text_missing": True,
                         "fallback_used": True,
