@@ -164,6 +164,36 @@ _alias_raw = _normalize_map(_load_json_map("ROUTER_ALIASES_JSON", "ROUTER_ALIASE
 SYNONYMS = _merge_map(_BASE_SYNONYMS, _syn_raw, _MERGE_SYNONYMS)
 ALIASES = _merge_map(_BASE_ALIASES, _alias_raw, _MERGE_ALIASES)
 
+
+def _extract_page_id(text: str) -> str:
+    if not text:
+        return ""
+    m = re.search(r"(?:pageid|page_id)\s*=\s*(\d+)", text, re.I)
+    return m.group(1) if m else ""
+
+_DOCKER_HINTS = [
+    "docker", "container", "image", "dockerfile", "compose", "docker-compose",
+    "registry", "volume", "bind", "mount", "run", "build", "ps", "stop",
+    "start", "exec", "port", "network",
+    "도커", "컨테이너", "이미지", "도커파일", "도커 컴포즈", "레지스트리",
+    "볼륨", "마운트", "빌드", "실행", "네트워크",
+]
+
+def _has_docker_intent(text: str) -> bool:
+    s = (text or "").lower()
+    return any(k.lower() in s for k in _DOCKER_HINTS)
+
+
+def _docker_focus_query(text: str) -> str:
+    base = (text or "").strip()
+    extra = (
+        "docker container image dockerfile docker-compose compose registry "
+        "run build ps stop start exec volume mount network port "
+        "도커 컨테이너 이미지 도커파일 도커 컴포즈 레지스트리 "
+        "빌드 실행 네트워크 볼륨 마운트"
+    )
+    return f"{base} {extra}".strip()
+
 # [PATCH] 쿼리 변형 제어용 플래그/상수 추가
 USE_SYNONYMS = (os.getenv("ROUTER_USE_SYNONYMS", "0").lower() not in ("0","false","no"))
 VARIANTS_MAX = int(os.getenv("ROUTER_VARIANTS_MAX", "4"))
@@ -1320,6 +1350,10 @@ def generate_query_variants(q: str, limit: int | None = None) -> List[str]:
             add(v)
             add(re.sub(r'\s+', '', v))
 
+    if _has_docker_intent(s):
+        add(_docker_focus_query(s))
+        add(re.sub(r'\s+', '', _docker_focus_query(s)))
+
     return cand[:limit]
 
 
@@ -1367,7 +1401,10 @@ def build_system_with_context(ctx_text: str, mode: str, force_summary: bool = Fa
             "- `인덱스에 근거 없음`은 출력하지 않는다.\n"
         )
     else:
-        guard_rule = "- 컨텍스트가 완전히 비었거나 무관하면 정확히 `인덱스에 근거 없음`만 출력한다.\n"
+        guard_rule = (
+            "- 컨텍스트가 완전히 비었으면 정확히 `인덱스에 근거 없음`만 출력한다.\n"
+            "- 컨텍스트가 있으면 '없음/불가/부족/모르' 류 표현을 피하고 요약한다.\n"
+        )
 
     return (
         "역할: 주어진 컨텍스트를 근거로 **정확하고 실무 친화적인** 한국어 답변을 작성한다.\n"
@@ -1539,6 +1576,16 @@ async def chat(req: ChatReq):
     trace_id = str(uuid.uuid4())
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
     clean_user_msg = normalize_query_router(orig_user_msg)
+    page_id = _extract_page_id(orig_user_msg) or _extract_page_id(clean_user_msg)
+    confluence_hint = bool(
+        _CONF_HOST_RE.search(orig_user_msg or "")
+        or _CONF_HOST_RE.search(clean_user_msg or "")
+        or _CONF_HINT_RE.search(orig_user_msg or "")
+        or _CONF_HINT_RE.search(clean_user_msg or "")
+        or _PAGEID_HINT_RE.search(orig_user_msg or "")
+        or _PAGEID_HINT_RE.search(clean_user_msg or "")
+    )
+    force_mcp = bool(page_id or confluence_hint)
     metadata = req.metadata or {}
     meta_sources = _extract_sources_from_metadata(metadata)
     meta_primary_src = meta_sources[0] if meta_sources else ""
@@ -1546,6 +1593,11 @@ async def chat(req: ChatReq):
     file_hint = bool(_FILE_HINT_RE.search(orig_user_msg))
     if meta_sources and not file_hint:
         file_hint = True
+    if force_mcp:
+        file_hint = False
+        meta_sources = []
+        meta_primary_src = ""
+        meta_src_set = None
     # limited_msgs can drop history; use raw req messages for source inference and rewrite.
     raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
     rewrite_q = ""
@@ -1559,6 +1611,8 @@ async def chat(req: ChatReq):
         for v in generate_query_variants(rewrite_q):
             if v not in variants:
                 variants.append(v)
+    if force_mcp:
+        variants = [rewrite_q or clean_user_msg] if (rewrite_q or clean_user_msg) else []
     limited_msgs = await _limited_messages(req.messages)
     limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
     prev_assistant_msg = _last_assistant_text(raw_msgs[:-1])
@@ -1567,8 +1621,8 @@ async def chat(req: ChatReq):
     rag_followup = bool(prev_assistant_msg) and _assistant_used_rag(prev_assistant_msg) \
         and len(clean_user_msg) <= FOLLOWUP_MAX_CHARS and not topic_shift
     spaces_hint: list[str] | None = None
-    history_src = _history_upload_source(raw_msgs[:-1])
-    file_hint_src = _extract_upload_source_hint(raw_msgs, rewrite_meta) if file_hint else ""
+    history_src = _history_upload_source(raw_msgs[:-1]) if not force_mcp else ""
+    file_hint_src = _extract_upload_source_hint(raw_msgs, rewrite_meta) if (file_hint and not force_mcp) else ""
     if meta_primary_src:
         file_hint_src = meta_primary_src
         if not history_src:
@@ -1585,16 +1639,18 @@ async def chat(req: ChatReq):
         _dbg(f"meta_sources: srcs={meta_sources}")
     if file_hint_src:
         _dbg(f"file_hint_src: src='{file_hint_src}'")
-    inferred_src = _match_upload_source_by_query(clean_user_msg)
-    if inferred_src and inferred_src != file_hint_src and _source_query_overlap(inferred_src, clean_user_msg):
-        file_hint = True
-        file_hint_src = inferred_src
-        if history_src != inferred_src:
-            history_src = inferred_src
-        _dbg(f"forced_infer_src: src='{inferred_src}' reason=query_match")
-    if history_src and not _source_query_overlap(history_src, clean_user_msg):
+    inferred_src = ""
+    if not force_mcp:
+        inferred_src = _match_upload_source_by_query(clean_user_msg)
+        if inferred_src and inferred_src != file_hint_src and _source_query_overlap(inferred_src, clean_user_msg):
+            file_hint = True
+            file_hint_src = inferred_src
+            if history_src != inferred_src:
+                history_src = inferred_src
+            _dbg(f"forced_infer_src: src='{inferred_src}' reason=query_match")
+    if history_src and not force_mcp and not _source_query_overlap(history_src, clean_user_msg):
         topic_shift = True
-    if history_src and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
+    if history_src and not force_mcp and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
         if _is_explicit_reset(clean_user_msg):
             _dbg(
                 "history_source_reset: src='%s' prev='%s' curr='%s' reason=explicit_reset"
@@ -1722,7 +1778,7 @@ async def chat(req: ChatReq):
 
         # === QA 경로 ===
         qa_json = None; qa_items = []; qa_urls = []
-        if file_hint:
+        if file_hint or force_mcp:
             _dbg("qa_skip_file_hint: true")
         else:
             for v in variants:
@@ -1933,10 +1989,18 @@ async def chat(req: ChatReq):
         # [PATCH] /qa 호출 페이로드에 spaces 전달
         for v in variants:
             try:
-                payload1 = {"question": v, "k": 10, "sticky": False, "need_fallback": False}
-                if file_hint_src:
+                sticky1 = False
+                sticky2 = True
+                if page_id:
+                    sticky1 = False
+                    sticky2 = False
+                payload1 = {"question": v, "k": 10, "sticky": sticky1, "need_fallback": bool(force_mcp)}
+                if page_id:
+                    payload1["page_id"] = page_id
+                if file_hint_src and not force_mcp:
                     payload1["source"] = file_hint_src
-                _apply_src_filters(payload1, file_hint_src, meta_src_set)
+                if not force_mcp:
+                    _apply_src_filters(payload1, file_hint_src, meta_src_set)
                 if spaces_hint:
                     payload1["spaces"] = spaces_hint
                 _add_trace(payload1, trace_id)
@@ -1945,10 +2009,18 @@ async def chat(req: ChatReq):
                 j1 = {}
 
             try:
-                payload2 = {"question": v, "k": 10, "sticky": True, "need_fallback": False}
-                if file_hint_src:
+                sticky1 = False
+                sticky2 = True
+                if page_id:
+                    sticky1 = False
+                    sticky2 = False
+                payload2 = {"question": v, "k": 10, "sticky": sticky2, "need_fallback": bool(force_mcp)}
+                if page_id:
+                    payload2["page_id"] = page_id
+                if file_hint_src and not force_mcp:
                     payload2["source"] = file_hint_src
-                _apply_src_filters(payload2, file_hint_src, meta_src_set)
+                if not force_mcp:
+                    _apply_src_filters(payload2, file_hint_src, meta_src_set)
                 if spaces_hint:
                     payload2["spaces"] = spaces_hint
                 _add_trace(payload2, trace_id)
@@ -2052,7 +2124,7 @@ async def chat(req: ChatReq):
                 best_ctx = "\n\n---\n\n".join([t for t in ctx_list_short if t])[:MAX_CTX_CHARS]
             _dbg(f"query_keep_short_ctx: ctx_len={len(best_ctx)} items={len(ctx_items)} reason=file_hint")
         else:
-            if history_src:
+            if history_src and not force_mcp:
                 try:
                     async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
                         resolved_src = await _resolve_source_from_index(client, history_src)
@@ -2103,32 +2175,33 @@ async def chat(req: ChatReq):
         if file_hint and best_ctx:
             # already have context; no need to infer or fallback.
             pass
-        inferred_src = _match_upload_source_by_query(clean_user_msg)
-        if inferred_src:
-            try:
-                _dbg(f"query_infer_source_try: src='{inferred_src}' q='{clean_user_msg}'")
-                payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": inferred_src}
-                _add_trace(payload, trace_id)
-                async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
-                    j_inf = await client.post(f"{RAG}/query", json=payload)
-                j_inf = j_inf.json() if hasattr(j_inf, "json") else {}
-                items_inf = (j_inf.get("items") or j_inf.get("contexts") or [])
-                ctx_list_inf = (j_inf.get("context_texts")
-                                or [c.get("text","") for c in (j_inf.get("contexts") or [])]
-                                or [it.get("text","") for it in (j_inf.get("items") or [])])
-                if items_inf:
-                    ctx_list_inf = extract_texts(items_inf)
-                ctx_inf = "\n\n---\n\n".join([t for t in ctx_list_inf if t])[:MAX_CTX_CHARS]
-                _dbg(f"query_infer_source_resp: items={len(items_inf)} ctx_len={len(ctx_inf)}")
-                if items_inf and ctx_inf and (not best_ctx or len(ctx_inf) > len(best_ctx)):
-                    best_ctx = ctx_inf
-                    src_urls = []
-                    ctx_items = items_inf
-                    _dbg(f"query_infer_source: src='{inferred_src}' ctx_len={len(best_ctx)} items={len(items_inf)}")
-            except Exception:
-                pass
+        if not force_mcp:
+            inferred_src = _match_upload_source_by_query(clean_user_msg)
+            if inferred_src:
+                try:
+                    _dbg(f"query_infer_source_try: src='{inferred_src}' q='{clean_user_msg}'")
+                    payload = {"question": clean_user_msg, "k": 10, "sticky": False, "need_fallback": False, "source": inferred_src}
+                    _add_trace(payload, trace_id)
+                    async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+                        j_inf = await client.post(f"{RAG}/query", json=payload)
+                    j_inf = j_inf.json() if hasattr(j_inf, "json") else {}
+                    items_inf = (j_inf.get("items") or j_inf.get("contexts") or [])
+                    ctx_list_inf = (j_inf.get("context_texts")
+                                    or [c.get("text","") for c in (j_inf.get("contexts") or [])]
+                                    or [it.get("text","") for it in (j_inf.get("items") or [])])
+                    if items_inf:
+                        ctx_list_inf = extract_texts(items_inf)
+                    ctx_inf = "\n\n---\n\n".join([t for t in ctx_list_inf if t])[:MAX_CTX_CHARS]
+                    _dbg(f"query_infer_source_resp: items={len(items_inf)} ctx_len={len(ctx_inf)}")
+                    if items_inf and ctx_inf and (not best_ctx or len(ctx_inf) > len(best_ctx)):
+                        best_ctx = ctx_inf
+                        src_urls = []
+                        ctx_items = items_inf
+                        _dbg(f"query_infer_source: src='{inferred_src}' ctx_len={len(best_ctx)} items={len(items_inf)}")
+                except Exception:
+                    pass
 
-    if not best_ctx and file_hint and not history_src:
+    if not best_ctx and file_hint and not history_src and not force_mcp:
         latest_src = _latest_upload_source()
         if latest_src:
             try:
@@ -2157,7 +2230,9 @@ async def chat(req: ChatReq):
                 pass
 
     if not best_ctx:
-        if ROUTER_TRI_STATE_ENFORCE and state == "RAG_REQUIRED":
+        if force_mcp:
+            allow_llm = False
+        elif ROUTER_TRI_STATE_ENFORCE and state == "RAG_REQUIRED":
             allow_llm = False
         else:
             allow_llm = _allow_llm_fallback(orig_user_msg, file_hint, spaces_hint, rag_followup, topic_shift)
