@@ -171,12 +171,14 @@ def _extract_page_id(text: str) -> str:
     m = re.search(r"(?:pageid|page_id)\s*=\s*(\d+)", text, re.I)
     return m.group(1) if m else ""
 
+
 _DOCKER_HINTS = [
     "docker", "container", "image", "dockerfile", "compose", "docker-compose",
     "registry", "volume", "bind", "mount", "run", "build", "ps", "stop",
-    "start", "exec", "port", "network",
-    "도커", "컨테이너", "이미지", "도커파일", "도커 컴포즈", "레지스트리",
-    "볼륨", "마운트", "빌드", "실행", "네트워크",
+    "start", "exec", "port", "network", "tag", "pull", "push",
+    "도커", "컨테이너", "이미지", "도커파일", "도커", "컴포즈",
+    "도커", "실행", "도커", "빌드", "도커", "중지", "도커", "시작",
+    "도커", "네트워크", "볼륨", "마운트", "레지스트리",
 ]
 
 def _has_docker_intent(text: str) -> bool:
@@ -189,10 +191,38 @@ def _docker_focus_query(text: str) -> str:
     extra = (
         "docker container image dockerfile docker-compose compose registry "
         "run build ps stop start exec volume mount network port "
+        "tag pull push "
         "도커 컨테이너 이미지 도커파일 도커 컴포즈 레지스트리 "
         "빌드 실행 네트워크 볼륨 마운트"
     )
     return f"{base} {extra}".strip()
+
+_REFUSAL_RE = re.compile(
+    r"(정보|근거|컨텍스트|자료).*(부족|없|무관|부재|찾을 수 없음|없습니다)|"
+    r"(답변할 수 없습니다|요약할 수 없습니다|제공할 수 없습니다)",
+    re.I,
+)
+_REFUSAL_RE2 = re.compile(
+    r"(insufficient|not enough|no).*(context|evidence)|cannot answer",
+    re.I,
+)
+
+def _is_refusal_like(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    return bool(_REFUSAL_RE.search(t) or _REFUSAL_RE2.search(t))
+
+def _filter_items_by_keywords(items: list[dict] | None, keywords: list[str]) -> list[dict]:
+    if not items:
+        return []
+    kws = [k.lower() for k in keywords if k]
+    out = []
+    for it in items:
+        blob = str(it.get("text") or "").lower()
+        if any(k in blob for k in kws):
+            out.append(it)
+    return out
 
 # [PATCH] 쿼리 변형 제어용 플래그/상수 추가
 USE_SYNONYMS = (os.getenv("ROUTER_USE_SYNONYMS", "0").lower() not in ("0","false","no"))
@@ -1954,6 +1984,10 @@ async def chat(req: ChatReq):
                 fallback = _fallback_summary_from_ctx(ctx_for_prompt)
                 if fallback:
                     cleaned = fallback
+        if _is_refusal_like(cleaned) and ctx_for_prompt:
+            fallback = _fallback_summary_from_ctx(ctx_for_prompt)
+            if fallback:
+                cleaned = fallback
         content = sanitize(cleaned) or "인덱스에 근거 없음"
         _dbg(f"qa_answer: raw_len={len(raw)} content_len={len(content)}")
 
@@ -2108,6 +2142,15 @@ async def chat(req: ChatReq):
         src_urls = best_urls_good or best_urls_any
         ctx_items = best_items_good or best_items_any
         used_q_for_relevance = used_q_good if best_ctx_good else used_q_any
+        if _has_docker_intent(clean_user_msg):
+            docker_items = _filter_items_by_keywords(ctx_items, _DOCKER_HINTS)
+            if docker_items:
+                docker_ctx = "\n\n---\n\n".join(extract_texts(docker_items))[:MAX_CTX_CHARS]
+                if docker_ctx:
+                    ctx_items = docker_items
+                    best_ctx = docker_ctx
+                    if ROUTER_DEBUG:
+                        _dbg(f"query_docker_focus: ctx_len={len(best_ctx)} items={len(ctx_items)}")
         _dbg(f"query_pick: q='{used_q_for_relevance}' ctx_len={len(best_ctx)} urls={len(src_urls)}")
 
         # 게이트
@@ -2347,35 +2390,11 @@ async def chat(req: ChatReq):
             fallback = _fallback_summary_from_ctx(ctx_for_prompt)
             if fallback:
                 cleaned = fallback
-    if cleaned.strip() == "?????? ??? ???" and full_ctx_for_check:
-        try:
-            _dbg("query_force_context_retry")
-            payload["messages"] = [{"role":"system","content":build_force_context_prompt(ctx_for_prompt)}] + [{"role":"user","content": clean_user_msg}]
-            r3 = await client.post(f"{OPENAI}/chat/completions", json=payload)
-            rj3 = r3.json()
-            raw = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-            cleaned = clean_llm_output(raw)
-        except Exception:
-            pass
-        if ROUTER_DEBUG:
-            _dbg(f"query_force_context_result: raw_len={len(raw)} cleaned_len={len(cleaned)}")
-    if cleaned.strip() == "???? ?? ??" and full_ctx_for_check:
-        try:
-            _dbg("query_force_context_retry")
-            payload["messages"] = [{"role":"system","content":build_force_context_prompt(ctx_for_prompt)}] + [{"role":"user","content": clean_user_msg}]
-            r3 = await client.post(f"{OPENAI}/chat/completions", json=payload)
-            rj3 = r3.json()
-            raw = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-            cleaned = clean_llm_output(raw)
-        except Exception:
-            pass
-        if ROUTER_DEBUG:
-            _dbg(f"query_force_context_result: raw_len={len(raw)} cleaned_len={len(cleaned)}")
-        if cleaned.strip() == "???? ?? ??" and full_ctx_for_check:
-            fallback = _fallback_summary_from_ctx(ctx_for_prompt)
-            if fallback:
-                cleaned = fallback
-    content = sanitize(cleaned) or "???? ?? ??"
+    if _is_refusal_like(cleaned) and full_ctx_for_check:
+        fallback = _fallback_summary_from_ctx(ctx_for_prompt)
+        if fallback:
+            cleaned = fallback
+    content = sanitize(cleaned) or "인덱스에 근거 없음"
     content = await _ensure_korean(content, req)
     if not file_hint and best_ctx and _LOCAL_SRC_RE.search(best_ctx):
         file_hint = True
