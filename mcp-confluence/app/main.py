@@ -685,7 +685,6 @@ def health():
 # FastMCP SSE app already exposes /sse and /messages (no trailing slash).
 sse_app = mcp.sse_app()
 sse_app.router.redirect_slashes = False
-api.include_router(sse_app.router)
 
 @api.post("/messages")
 async def _messages_slash_proxy(request: Request):
@@ -725,6 +724,9 @@ async def _messages_slash_proxy(request: Request):
 @api.post("/messages/")
 async def _messages_slash_proxy_alias(request: Request):
     return await _messages_slash_proxy(request)
+
+# Register SSE routes after explicit /messages handlers to avoid route shadowing.
+api.include_router(sse_app.router)
 
 if __name__ == "__main__":
     import os, uvicorn
