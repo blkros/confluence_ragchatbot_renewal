@@ -1,0 +1,61 @@
+1325: 
+1326: def build_system_with_context(ctx_text: str, mode: str) -> str:
+1327:     if mode == "bulleted":
+1328:         style = (
+1329:             f"- 최대 {BULLETS_MAX}개 불릿으로 **구체적**으로 서술한다.\n"
+1330:             "- 각 불릿은 2~4문장으로 쓴다.\n"
+1331:             "- 불릿 외의 군더더기 서론/결론 문단은 길게 넣지 않는다.\n"
+1332:         )
+1333:     elif mode == "sections":
+1334:         style = (
+1335:             "- 2~4개의 **문단**으로 핵심→배경→세부→시사점 순으로 정리한다.\n"
+1336:             "- 마크다운 리스트 문법은 사용하지 않는다.\n"
+1337:         )
+1338:     else:
+1339:         style = (
+1340:             "- **리스트/번호/하이픈(-, •, 1.) 없이** 한두 개의 **연속된 문단**으로 자연스럽게 작성한다.\n"
+1341:             "- 첫 문장에 요지를 분명히 말하고, 이어서 구성요소·동작·제약을 설명한다.\n"
+1342:         )
+1343: 
+1344:     numeric_rules = (
+1345:         "- 표/목록의 **수치**는 **같은 행(같은 항목)** 에 적힌 숫자만 인용한다.\n"
+1346:         "- **합계/총계** 숫자를 개별 항목 값으로 배정하지 않는다.\n"
+1347:         "- 숫자를 쓸 때는 반드시 `항목명 숫자`로 **쌍**을 이뤄 서술한다. (예: `반포동 47`)\n"
+1348:         "- 상위 단위 합계는 필요 시 `(서초구 합계 439)`처럼 **합계임을 명시**한다.\n"
+1349:         "- 불명확하면 숫자 대신 '수치 불분명'으로 적는다.\n"
+1350:     )
+1351:     heading_hint = (f"- 가능하면 '{HEADING}' 아래로 정리한다.\n" if HEADING else "")
+1352: 
+1353:     return (
+1354:         "역할: 주어진 컨텍스트를 근거로 **정확하고 실무 친화적인** 한국어 답변을 작성한다.\n"
+1355:         "원칙:\n"
+1356:         "- 반드시 한국어로만 작성한다.\n"
+1357:         "- 컨텍스트에 있는 정보만 사용하고 추측 금지.\n"
+1358:         "- 고유명사/수치는 가능한 그대로 인용하되 과도한 반복은 피한다.\n"
+1359:         "- 내부 추론(<think> 등) 출력 금지, 최종 답만 출력한다.\n"
+1360:         "- <think> 태그를 사용하더라도 답변은 반드시 태그 밖에 출력한다.\n"
+1361:         + heading_hint + style + numeric_rules +
+1362:         "- 컨텍스트가 완전히 비었거나 무관하면 정확히 `인덱스에 근거 없음`만 출력한다.\n"
+1363:         "- 민감정보(비밀번호/토큰/IP 마지막 옥텟)는 마스킹한다.\n"
+1364:         "[컨텍스트 시작]\n"
+1365:         f"{ctx_text}\n"
+1366:         "[컨텍스트 끝]\n"
+1367:     )
+1368: 
+1369: def _build_system_prefix(mode: str) -> str:
+1370:     # Use empty context to approximate system prompt size for budgeting.
+1371:     return build_system_with_context("", mode)
+1372: 
+1373: def _limit_urls(urls: List[str] | None, top_n: int = ROUTER_SOURCES_MAX) -> List[str]:
+1374:     out, seen = [], set()
+1375:     for u in urls or []:
+1376:         nu = _normalize_url(u)
+1377:         if nu and nu not in seen:
+1378:             seen.add(nu); out.append(nu)
+1379:         if len(out) >= top_n:
+1380:             break
+1381:     return out
+1382: 
+1383: def _items_have_local_source(items: list[dict] | None) -> bool:
+1384:     for it in items or []:
+1385:         meta = it.get("metadata") or {}
