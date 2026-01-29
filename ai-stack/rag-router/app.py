@@ -176,9 +176,9 @@ _DOCKER_HINTS = [
     "docker", "container", "image", "dockerfile", "compose", "docker-compose",
     "registry", "volume", "bind", "mount", "run", "build", "ps", "stop",
     "start", "exec", "port", "network", "tag", "pull", "push",
-    "도커", "컨테이너", "이미지", "도커파일", "도커", "컴포즈",
-    "도커", "실행", "도커", "빌드", "도커", "중지", "도커", "시작",
-    "도커", "네트워크", "볼륨", "마운트", "레지스트리",
+    "??", "????", "???", "????", "?? ??", "??-???", "?? ???",
+    "???", "?????", "??", "???", "??", "????", "??", "??",
+    "??", "?????",
 ]
 
 def _has_docker_intent(text: str) -> bool:
@@ -192,8 +192,8 @@ def _docker_focus_query(text: str) -> str:
         "docker container image dockerfile docker-compose compose registry "
         "run build ps stop start exec volume mount network port "
         "tag pull push "
-        "도커 컨테이너 이미지 도커파일 도커 컴포즈 레지스트리 "
-        "빌드 실행 네트워크 볼륨 마운트"
+        "?? ???? ??? ???? ??-??? ?? ??? ??? "
+        "????? ?? ??? ?? ???? ?? ?? ?? ?????"
     )
     return f"{base} {extra}".strip()
 
@@ -219,7 +219,14 @@ def _filter_items_by_keywords(items: list[dict] | None, keywords: list[str]) -> 
     kws = [k.lower() for k in keywords if k]
     out = []
     for it in items:
-        blob = str(it.get("text") or "").lower()
+        md = it.get("metadata") or {}
+        blob = " ".join(
+            [
+                str(it.get("text") or ""),
+                str(md.get("title") or ""),
+                str(md.get("section_title") or ""),
+            ]
+        ).lower()
         if any(k in blob for k in kws):
             out.append(it)
     return out
@@ -918,6 +925,20 @@ def _tokens(s: str) -> list[str]:
             toks.append(t2)
     return toks
 
+def _core_query_terms(query: str, max_terms: int = 4) -> list[str]:
+    toks = [t for t in _tokens(query) if t not in _STOPWORDS]
+    if not toks:
+        return []
+    filtered = [t for t in toks if len(t) >= 2 or re.search(r"\d", t)]
+    if not filtered:
+        filtered = toks
+    idx = {}
+    for i, t in enumerate(filtered):
+        if t not in idx:
+            idx[t] = i
+    ranked = sorted(idx.items(), key=lambda kv: (-len(kv[0]), kv[1]))
+    return [t for t, _ in ranked[:max_terms]]
+
 def relevance_ratio(q: str, ctx: str, ctx_limit: int = 2000) -> float:
     qk = [t for t in _tokens(q) if t not in _STOPWORDS]
     if not qk:
@@ -981,15 +1002,9 @@ def _source_query_overlap(src: str, query: str) -> bool:
 def _focus_query_for_source(query: str) -> str:
     if not query:
         return ""
-    norm = _normalize_query(query).lower()
-    docker_terms = [
-        "도커", "docker", "container", "컨테이너", "image", "이미지", "dockerfile",
-        "compose", "docker compose", "docker run", "docker build", "docker ps",
-        "docker stop", "docker pull", "docker push", "볼륨", "volume", "mount",
-        "포트", "port", "네트워크", "network",
-    ]
-    if any(t in norm for t in docker_terms):
-        return "도커 컨테이너 이미지 docker dockerfile docker compose docker run"
+    core = _core_query_terms(query, max_terms=3)
+    if core:
+        return " ".join(core)
     if not ROUTER_USE_FOCUS_KEYWORDS or not _FOCUS_KEYWORDS:
         return ""
     q_lower = query.lower()
@@ -1380,9 +1395,10 @@ def generate_query_variants(q: str, limit: int | None = None) -> List[str]:
             add(v)
             add(re.sub(r'\s+', '', v))
 
-    if _has_docker_intent(s):
-        add(_docker_focus_query(s))
-        add(re.sub(r'\s+', '', _docker_focus_query(s)))
+    core_terms = _core_query_terms(s, max_terms=4)
+    if core_terms:
+        add(" ".join(core_terms))
+        add(re.sub(r'\s+', '', " ".join(core_terms)))
 
     return cand[:limit]
 
@@ -2142,15 +2158,16 @@ async def chat(req: ChatReq):
         src_urls = best_urls_good or best_urls_any
         ctx_items = best_items_good or best_items_any
         used_q_for_relevance = used_q_good if best_ctx_good else used_q_any
-        if _has_docker_intent(clean_user_msg):
-            docker_items = _filter_items_by_keywords(ctx_items, _DOCKER_HINTS)
-            if docker_items:
-                docker_ctx = "\n\n---\n\n".join(extract_texts(docker_items))[:MAX_CTX_CHARS]
-                if docker_ctx:
-                    ctx_items = docker_items
-                    best_ctx = docker_ctx
+        core_terms = _core_query_terms(clean_user_msg, max_terms=4)
+        if core_terms:
+            core_items = _filter_items_by_keywords(ctx_items, core_terms)
+            if core_items:
+                core_ctx = "\n\n---\n\n".join(extract_texts(core_items))[:MAX_CTX_CHARS]
+                if core_ctx:
+                    ctx_items = core_items
+                    best_ctx = core_ctx
                     if ROUTER_DEBUG:
-                        _dbg(f"query_docker_focus: ctx_len={len(best_ctx)} items={len(ctx_items)}")
+                        _dbg(f"query_core_focus: ctx_len={len(best_ctx)} items={len(ctx_items)} terms={core_terms}")
         _dbg(f"query_pick: q='{used_q_for_relevance}' ctx_len={len(best_ctx)} urls={len(src_urls)}")
 
         # 게이트
