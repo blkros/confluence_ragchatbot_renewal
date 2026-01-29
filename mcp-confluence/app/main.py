@@ -665,13 +665,14 @@ from starlette.responses import Response
 
 # Standardize on no trailing slashes for all route registrations.
 api = FastAPI(redirect_slashes=False)
+api.router.redirect_slashes = False
 
 @api.middleware("http")
 async def _strip_mcp_trailing_slash(request: Request, call_next):
     # Normalize trailing slashes to the standard no-slash route form.
     # so the FastMCP router matches. Also update raw_path for Starlette routing.
     path = request.url.path
-    if path in ("/messages/", "/sse/"):
+    if path in ("/sse/",):
         new_path = path.rstrip("/")
         request.scope["path"] = new_path
         request.scope["raw_path"] = new_path.encode("ascii")
@@ -683,6 +684,7 @@ def health():
 
 # FastMCP SSE app already exposes /sse and /messages (no trailing slash).
 sse_app = mcp.sse_app()
+sse_app.router.redirect_slashes = False
 api.include_router(sse_app.router)
 
 @api.post("/messages")
