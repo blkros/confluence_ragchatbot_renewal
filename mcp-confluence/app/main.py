@@ -662,7 +662,7 @@ def _html_search_fallback(client: httpx.Client, query: str, space: t.Optional[st
 # mcp-confluence/main.py (하단)
 from fastapi import FastAPI
 
-api = FastAPI(redirect_slashes=False)
+api = FastAPI()
 
 @api.get("/health")
 def health():
