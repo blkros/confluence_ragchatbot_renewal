@@ -78,8 +78,65 @@ _FILE_EXT_RE = re.compile(r"\.(pdf|pptx|ppt|xlsx|xls|csv|txt|md|docx)($|\?)", re
 _CHAPTER_RE = re.compile(r"제\s*(\d+)\s*장")
 _ARTICLE_RE = re.compile(r"제\s*(\d+)\s*조")
 
+# === 세션 기반 Sticky 관리 (경쟁 조건 해결) ===
+class SessionManager:
+    """세션별 sticky 소스 관리 - 동시 사용자 간섭 방지"""
+    def __init__(self):
+        self._sessions = {}  # session_id -> {"source": str, "until": float, "last_source": str}
+        self._lock = asyncio.Lock()
+        self._cleanup_interval = 300  # 5분마다 만료된 세션 정리
+
+    async def get_sticky(self, session_id: Optional[str]) -> Optional[str]:
+        """세션의 현재 sticky 소스 반환"""
+        if not session_id:
+            return None
+        async with self._lock:
+            sess = self._sessions.get(session_id)
+            if sess and time.time() < sess.get("until", 0):
+                return sess.get("source")
+            return None
+
+    async def set_sticky(self, session_id: Optional[str], source: str, duration: int = 180):
+        """세션의 sticky 소스 설정"""
+        if not session_id:
+            return
+        async with self._lock:
+            if session_id not in self._sessions:
+                self._sessions[session_id] = {}
+            self._sessions[session_id]["source"] = _norm_source(source)
+            self._sessions[session_id]["until"] = time.time() + duration
+            self._sessions[session_id]["last_source"] = _norm_source(source)
+
+    async def clear_sticky(self, session_id: Optional[str]):
+        """세션의 sticky 소스 해제"""
+        if not session_id:
+            return
+        async with self._lock:
+            if session_id in self._sessions:
+                self._sessions[session_id]["source"] = None
+                self._sessions[session_id]["until"] = 0
+
+    async def get_last_source(self, session_id: Optional[str]) -> Optional[str]:
+        """세션의 마지막 업로드/인덱싱 소스 반환"""
+        if not session_id:
+            return None
+        async with self._lock:
+            sess = self._sessions.get(session_id)
+            return sess.get("last_source") if sess else None
+
+    async def cleanup_expired(self):
+        """만료된 세션 정리"""
+        async with self._lock:
+            now = time.time()
+            expired = [sid for sid, sess in self._sessions.items()
+                      if sess.get("until", 0) < now - 600]  # 10분 이상 지난 것만
+            for sid in expired:
+                del self._sessions[sid]
+
+session_manager = SessionManager()
+
+# 후방 호환성: 전역 sticky (session_id 없는 요청용)
 last_source: Optional[str] = None
-# >>> [ADD] 최근 소스 잠금 상태 (연속 질문 안정화용)
 current_source: Optional[str] = None
 current_source_until: float = 0.0
 STICKY_SECS = int(getattr(settings, "STICKY_SECS", 180))
@@ -541,6 +598,7 @@ def _mcp_results_have_text(results: list[dict]) -> bool:
 
 
 # 빠른 MCP 폴백: 여러 후보 질의를 '동시에' 던지고 '첫 성공'만 사용
+# [FIX] 안전한 태스크 취소를 위해 개선
 async def _mcp_search_fast(q: str, *, forced_page_id: Optional[str], spaces_for_mcp: list[Optional[str]]) -> list[dict]:
     import asyncio, time
     start = time.monotonic()
@@ -562,34 +620,72 @@ async def _mcp_search_fast(q: str, *, forced_page_id: Optional[str], spaces_for_
     qlist = [x for x in cand if x and not (x in seen or seen.add(x))][:MCP_MAX_TASKS]
 
     spaces = spaces_for_mcp or [None]
-    tasks: list[asyncio.Task] = []
-    for sp in spaces:
-        for qq in qlist:
-            tasks.append(asyncio.create_task(
-                mcp_search(qq, limit=5, timeout=MCP_TIMEOUT, space=sp, langs=SEARCH_LANGS)
-            ))
 
-    # 2) 벽시계 제한 내에서 '첫 성공'만 받기
-    deadline = start + MAX_FALLBACK_SECS
-    while tasks and time.monotonic() < deadline:
-        done, pending = await asyncio.wait(tasks, timeout=deadline - time.monotonic(),
-                                           return_when=asyncio.FIRST_COMPLETED)
-        if not done:
-            break
-        for t in done:
-            try:
-                part = t.result() or []
-                if part:
-                    # 나머지 취소
-                    for p in pending: p.cancel()
-                    return part
-            except Exception:
-                pass
-        tasks = list(pending)
+    # [NEW] 안전한 태스크 관리 - TaskGroup 시도, 실패 시 기존 방식
+    try:
+        # Python 3.11+ TaskGroup 사용 (자동 취소)
+        async with asyncio.timeout(MAX_FALLBACK_SECS):
+            async with asyncio.TaskGroup() as tg:
+                tasks = []
+                for sp in spaces:
+                    for qq in qlist:
+                        tasks.append(tg.create_task(
+                            mcp_search(qq, limit=5, timeout=MCP_TIMEOUT, space=sp, langs=SEARCH_LANGS)
+                        ))
 
-    # 타임아웃/무응답 → 모두 취소
-    for t in tasks:
-        t.cancel()
+                # 첫 성공 결과 찾기 (TaskGroup은 모든 태스크 자동 관리)
+                for task in asyncio.as_completed(tasks):
+                    try:
+                        result = await task
+                        if result:
+                            # TaskGroup은 __aexit__에서 남은 태스크를 자동 취소
+                            return result
+                    except Exception:
+                        continue
+    except AttributeError:
+        # Python < 3.11 폴백: 기존 방식 (개선된 취소 로직)
+        tasks: list[asyncio.Task] = []
+        for sp in spaces:
+            for qq in qlist:
+                tasks.append(asyncio.create_task(
+                    mcp_search(qq, limit=5, timeout=MCP_TIMEOUT, space=sp, langs=SEARCH_LANGS)
+                ))
+
+        deadline = start + MAX_FALLBACK_SECS
+        try:
+            while tasks and time.monotonic() < deadline:
+                done, pending = await asyncio.wait(
+                    tasks,
+                    timeout=max(0.1, deadline - time.monotonic()),
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                if not done:
+                    break
+
+                for t in done:
+                    try:
+                        part = t.result() or []
+                        if part:
+                            # 나머지 취소 및 대기
+                            for p in pending:
+                                p.cancel()
+                            # CancelledError 처리 대기
+                            await asyncio.gather(*pending, return_exceptions=True)
+                            return part
+                    except Exception:
+                        pass
+                tasks = list(pending)
+        finally:
+            # 타임아웃 시 모든 태스크 안전하게 취소
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            # CancelledError 전파 대기
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+    except asyncio.TimeoutError:
+        pass  # TaskGroup 타임아웃
+
     return []
 
 # PDF 관련 질의 감지 (파일/업로드/확장자/미imetype 기반)
@@ -648,10 +744,28 @@ def _collect_text_of_source(src: str, limit_chars: int = 2000) -> str:
     body_part  = " ".join(buf_body)[:limit_chars]
     return (title_part + "\n" + body_part).strip()
 
+# [NEW] 제네릭 질문 패턴 (sticky 해제용)
+_GENERIC_QUESTION_RE = re.compile(
+    r'^(안녕|고마워|감사|좋아|최고|괜찮|오케이|ok|okay|yes|no|응|아니|'
+    r'알았어|됐어|됐다|그래|네|예|아니오|아뇨|ㅇㅋ|ㅇㅇ|ㄴㄴ|'
+    r'날씨|시간|요일|몇\s*시|뭐\s*해|심심|재밌|재미|놀|게임).*',
+    re.I
+)
+
 def _sticky_is_relevant(q: str, src: str) -> bool:
+    """Sticky 소스가 현재 질문과 관련있는지 검사"""
+    # [NEW] 제네릭 질문은 sticky 해제
+    if _GENERIC_QUESTION_RE.match(q.strip()):
+        return False
+
     anchors = _anchor_tokens_from_query(q)
     if not anchors:
-        return True  # 앵커가 없으면 관대하게 허용
+        # [FIX] 앵커가 없어도 제네릭 아니면 일단 유지 (짧은 질문 허용)
+        # 하지만 너무 짧은 질문(<3자)은 거부
+        if len(q.strip()) < 3:
+            return False
+        return True
+
     sample = _collect_text_of_source(src, limit_chars=3000).lower()
     if not sample:
         return False
@@ -739,11 +853,18 @@ def _url_has_page_id(url: Optional[str], page_id: Optional[str]) -> bool:
         return False
     return bool(_PAGEID_RE.search(str(url)) and page_id in str(url))
 
-def _set_sticky(src: str, secs: int = STICKY_SECS):
+def _set_sticky(src: str, secs: int = STICKY_SECS, session_id: Optional[str] = None):
     """해당 소스를 잠시 기본 대상으로 고정(연속 질문 시 섞임 방지)"""
     global current_source, current_source_until
+    # 전역 sticky (후방 호환)
     current_source = _norm_source(src)
     current_source_until = time.time() + secs
+    # 세션 기반 sticky (비동기 실행)
+    if session_id:
+        try:
+            asyncio.create_task(session_manager.set_sticky(session_id, src, secs))
+        except Exception:
+            pass  # 이벤트 루프 없으면 무시
 
 def _norm_source(s: str) -> str:
     s = (s or "").replace("\\", "/")
@@ -759,11 +880,42 @@ app.add_middleware(
 )
 
 def _norm_kr(s: str) -> str:
+    # [DEPRECATED] 하위 호환용 - normalize_text_for_search 사용 권장
     # 공백 제거 + 도메인 동의어/정규화 적용 + 소문자
     t = _basic_normalize(s)
     t = _apply_canon_map(t)
     t = re.sub(r"\s+", "", t)        # 공백 제거 (아파트 누리 -> 아파트누리)
     return t.lower()
+
+# === [NEW] 통일된 정규화 함수 (검색/인덱싱 공통) ===
+def normalize_text_for_search(text: str, preserve_spaces: bool = False) -> str:
+    """
+    검색과 인덱싱에 모두 사용되는 정규화 함수
+
+    Args:
+        text: 정규화할 텍스트
+        preserve_spaces: True면 공백 유지, False면 한글 연속부 공백 제거
+
+    Returns:
+        정규화된 텍스트
+    """
+    if not text:
+        return ""
+
+    # 1단계: 기본 정규화 (NFC, 공백 축약)
+    t = _basic_normalize(text)
+
+    # 2단계: 도메인 동의어 치환
+    t = _apply_canon_map(t)
+
+    # 3단계: 한국어 복합명사 공백 처리
+    if not preserve_spaces:
+        t = _collapse_korean_compounds(t)
+
+    # 4단계: 소문자 변환
+    t = t.lower()
+
+    return t
 
 def _match_pageid(md: dict, pid: str) -> bool:
     if not pid:
@@ -963,6 +1115,8 @@ def _sparse_keyword_hits(q: str, limit: int = 150, space: Optional[str] = None) 
     """
     docstore 전체를 훑어 '간단 키워드 매치' 기반 후보를 만든다.
     반환: pool_hits와 동일한 dict 목록({text, metadata, score})
+
+    [FIX] max_scan 제한 제거, 최신 문서 우선 스캔
     """
     if not q.strip():
         return []
@@ -976,15 +1130,22 @@ def _sparse_keyword_hits(q: str, limit: int = 150, space: Optional[str] = None) 
     except Exception:
         return []
 
+    # [NEW] 문서들을 최신순으로 정렬 (created_at이 있으면 사용, 없으면 소스명 역순)
+    docs_sorted = sorted(
+        dct.values(),
+        key=lambda d: (
+            -(d.metadata or {}).get("created_at", 0),  # 최신순
+            (d.metadata or {}).get("source", "")       # 소스명
+        )
+    )
+
     out = []
-    max_scan = 20000  # 문서 청크가 매우 많은 경우 상한
-    count = 0
-    for d in dct.values():
+    for d in docs_sorted:
         md = dict(d.metadata or {})
         src = str(md.get("source", ""))
-        
-        count += 1
-        if count >= max_scan and len(out) >= limit:
+
+        # limit 도달 시 중단 (max_scan 제한 제거)
+        if len(out) >= limit:
             break
         
         # (옵션) space 하드필터
@@ -1012,8 +1173,8 @@ def _sparse_keyword_hits(q: str, limit: int = 150, space: Optional[str] = None) 
 
 # ===== 제목/한글구절 정규화 유틸 =====
 def _norm_ko_text(s: str) -> str:
-    # 이미 있는 _basic_normalize / _apply_canon_map / _collapse_korean_compounds 활용
-    return _collapse_korean_compounds(_apply_canon_map(_basic_normalize(s))).lower()
+    """제목/한글구절 정규화 - normalize_text_for_search 래퍼"""
+    return normalize_text_for_search(s, preserve_spaces=False)
 
 def _longest_ko_phrase(q: str) -> str:
     q = _preseg_stop_phrases(_basic_normalize(q)) 
@@ -1084,6 +1245,10 @@ def _rerank_mcp_results(q: str, results: list[dict]) -> list[dict]:
         scored.append(r)
 
     # 집계 페이지 본문에 있는 하이퍼링크의 앵커 텍스트가 질문의 핵심 구절(keyphrase)과 '정확히' 일치하면 타겟 pageId 점수 크게 올리기
+    # [FIX] 90.0 → 1.5로 정규화 (다른 보너스와 밸런스 맞춤)
+    ANCHOR_LINK_BOOST = 1.5  # 앵커 링크 매칭 보너스
+    ANCHOR_LINK_PENALTY = 0.1  # 중간 페이지 페널티
+
     def _pid_of(res: dict) -> str | None:
         pid = (res.get("id") or "") or ""
         if not pid:
@@ -1109,8 +1274,8 @@ def _rerank_mcp_results(q: str, results: list[dict]) -> list[dict]:
                 if anchor_norm and any(t and (anchor_norm == t or t in anchor_norm) for t in targets):
                     tgt = by_pid.get(ln["pageId"])
                     if tgt and tgt is not res:
-                        tgt["_rank"] = float(tgt.get("_rank") or 0.0) + 90.0
-                        res["_rank"] = float(res.get("_rank") or 0.0) - 0.3
+                        tgt["_rank"] = float(tgt.get("_rank") or 0.0) + ANCHOR_LINK_BOOST
+                        res["_rank"] = float(res.get("_rank") or 0.0) - ANCHOR_LINK_PENALTY
 
     scored.sort(key=lambda x: x.get("_rank", 0.0), reverse=True)
     return _dedup_by_title(scored)
@@ -1164,13 +1329,8 @@ def _apply_canon_map(text: str) -> str:
     return t
 
 def normalize_query(q: str) -> str:
-    # 1단계: 기본 정규화
-    t = _basic_normalize(q)
-    # 2단계: 도메인 동의어 치환
-    t = _apply_canon_map(t)
-    # 3단계: 한국어 복합명사 공백 축약
-    t = _collapse_korean_compounds(t)
-    return t
+    """쿼리 정규화 - normalize_text_for_search 래퍼"""
+    return normalize_text_for_search(q, preserve_spaces=False)
 
 def _apply_space_hint(hits: List[dict], space: Optional[str]):
     """SPACE_FILTER_MODE == soft 일 때, space 일치 항목에 가산점"""
@@ -1348,23 +1508,41 @@ def _make_embedder() -> Embeddings:
     return _SafeEmbeddings(emb)
 
 def _load_or_init_vectorstore() -> FAISSStore:
-    try:
-        faiss_file = Path(INDEX_DIR) / "index.faiss"
-        pkl_file   = Path(INDEX_DIR) / "index.pkl"
-        if faiss_file.exists() and pkl_file.exists():
+    """
+    FAISS 인덱스 로드 또는 초기화
+
+    [FIX] 인덱스 파일이 있는데 로드 실패하면 명시적 에러 발생
+    """
+    faiss_file = Path(INDEX_DIR) / "index.faiss"
+    pkl_file   = Path(INDEX_DIR) / "index.pkl"
+
+    # 인덱스 파일이 존재하는 경우
+    if faiss_file.exists() and pkl_file.exists():
+        try:
             emb = _make_embedder()
             vs = FAISSStore.load_local(
                 INDEX_DIR,
                 embeddings=emb,
                 allow_dangerous_deserialization=True
             )
-            log.info("Loaded existing FAISS index from %s", INDEX_DIR)
+            log.info("✓ Loaded existing FAISS index from %s (docs=%d)",
+                     INDEX_DIR, len(vs.docstore._dict))
             return vs
-    except Exception as e:
-        log.warning("load_local failed, starting empty: %s", e)
-    # 없거나 로드 실패 → 빈 인덱스
+        except Exception as e:
+            # [NEW] 인덱스 파일이 있는데 로드 실패 → 치명적 에러
+            log.error("✗ CRITICAL: Failed to load existing FAISS index: %s", e)
+            log.error("  Index files exist but are corrupted. Please:")
+            log.error("  1. Check index integrity: %s", INDEX_DIR)
+            log.error("  2. Restore from backup, or")
+            log.error("  3. Delete index files to rebuild")
+            raise RuntimeError(
+                f"Index corrupted: {e}. "
+                "Please restore from backup or delete index directory to rebuild."
+            ) from e
+
+    # 인덱스 파일이 없는 경우 → 빈 인덱스로 시작
+    log.info("○ No existing index found, initializing empty FAISS index")
     vs = _empty_faiss()
-    log.info("Initialized empty FAISS index")
     return vs
 
 def _empty_faiss() -> FAISSStore:
@@ -1620,6 +1798,7 @@ async def ingest(
     file: UploadFile = File(...),
     overwrite: bool = Form(False),
     parser: str = Form("auto"),
+    session_id: Optional[str] = Form(None),
 ):
     global vectorstore, last_source   # ← 함수 제일 위에 둡니다
 
@@ -1662,7 +1841,10 @@ async def ingest(
 
             # ← 여기서 전역 업데이트 & sticky (전역선언은 함수 맨 위에서 이미 했음)
             last_source = _norm_source(str(dest))
-            _set_sticky(last_source)
+            _set_sticky(last_source, session_id=session_id)
+            # 세션 기반 last_source 설정
+            if session_id:
+                await session_manager.set_sticky(session_id, last_source)
             rebuild_domain_stats_from_index()
 
         return {
@@ -1682,6 +1864,9 @@ async def update_index(payload: dict):
 
     if vectorstore is None:
         raise HTTPException(500, "vectorstore is not ready.")
+
+    # session_id 추출
+    session_id = (payload or {}).get("session_id") or (payload or {}).get("sessionId")
 
     base = Path(UPLOAD_DIR).resolve()
     rel  = str((payload or {}).get("path") or "").replace("\\", "/")
@@ -1725,7 +1910,10 @@ async def update_index(payload: dict):
 
             # 업서트 성공 후에만 최근 소스/sticky 갱신
             last_source = _norm_source(str(candidate))
-            _set_sticky(last_source)
+            _set_sticky(last_source, session_id=session_id)
+            # 세션 기반 last_source 설정
+            if session_id:
+                await session_manager.set_sticky(session_id, last_source)
             rebuild_domain_stats_from_index()
 
         return {
@@ -1917,6 +2105,11 @@ async def query(payload: dict = Body(...)):
     trace_id = (payload or {}).get("trace_id")
     if trace_id:
         log.info("trace_id=%s q=%r", trace_id, q[:160])
+
+    # [ADD] session_id 추출 (동시 사용자 간섭 방지)
+    session_id = (payload or {}).get("session_id") or (payload or {}).get("sessionId")
+    if not session_id and trace_id:
+        session_id = f"trace_{trace_id}"  # trace_id로 폴백
 
     # [ADD] pageId 힌트만 추출(잠금 아님)
     page_id = (payload or {}).get("pageId") or (payload or {}).get("page_id") or (payload or {}).get("pageid")
@@ -2116,26 +2309,47 @@ async def query(payload: dict = Body(...)):
 
     sticky_source: Optional[str] = None
 
-    # sticky 적용 (유효기간 + 관련성 체크)
+    # sticky 적용 (유효기간 + 관련성 체크) - 세션 기반 + 전역 폴백
     if _is_title_like(q):
         sticky_source = None  # '제목형'은 특정 파일에 고정하지 않음
-
-    now = time.time()
-    if (not ignore_sticky) and not src_filter and not src_set and current_source and now < current_source_until:
-        if (not STICKY_STRICT) or _sticky_is_relevant(q, current_source):
-            if STICKY_MODE == "filter":
-                src_filter = current_source
-            else:  # "bonus"
-                sticky_source = current_source
-        else:
-            current_source = None
-            current_source_until = 0.0
+    else:
+        # 세션 기반 sticky 우선
+        if session_id and not ignore_sticky and not src_filter and not src_set:
+            session_sticky = await session_manager.get_sticky(session_id)
+            if session_sticky:
+                if (not STICKY_STRICT) or _sticky_is_relevant(q, session_sticky):
+                    if STICKY_MODE == "filter":
+                        src_filter = session_sticky
+                    else:  # "bonus"
+                        sticky_source = session_sticky
+                else:
+                    await session_manager.clear_sticky(session_id)
+        # 전역 sticky 폴백 (session_id 없는 경우)
+        elif (not ignore_sticky) and not src_filter and not src_set:
+            now = time.time()
+            if current_source and now < current_source_until:
+                if (not STICKY_STRICT) or _sticky_is_relevant(q, current_source):
+                    if STICKY_MODE == "filter":
+                        src_filter = current_source
+                    else:  # "bonus"
+                        sticky_source = current_source
+                else:
+                    current_source = None
+                    current_source_until = 0.0
 
     # "이 파일/첨부한 파일" 지시어면 최근 업로드 파일로 고정
     global last_source
-    if not src_filter and not src_set and last_source and THIS_FILE_PAT.search(q):
-        src_filter = last_source
-        _set_sticky(last_source)
+    if not src_filter and not src_set and THIS_FILE_PAT.search(q):
+        # 세션 기반 last_source 우선
+        if session_id:
+            sess_last = await session_manager.get_last_source(session_id)
+            if sess_last:
+                src_filter = sess_last
+                _set_sticky(sess_last, session_id=session_id)
+        # 전역 last_source 폴백
+        elif last_source:
+            src_filter = last_source
+            _set_sticky(last_source, session_id=session_id)
 
     # 3-A) 후보 선택은 MMR로
     try:
@@ -2165,7 +2379,7 @@ async def query(payload: dict = Body(...)):
             ]
             if cands:
                 src_filter = cands[0]
-                _set_sticky(src_filter)
+                _set_sticky(src_filter, session_id=session_id)
         except Exception:
             pass
 
@@ -2427,25 +2641,54 @@ async def query(payload: dict = Body(...)):
         })
 
     # If source is fixed but only title/summary are selected, fall back to chunks from that source.
+    # [FIX] 유사도 기반 청크 선택으로 개선 (고정 스코어 0.35 → 실제 유사도)
     if src_filter and (not items or all((it.get("metadata") or {}).get("kind") in ("title", "summary") for it in items)):
         try:
             wanted = _norm_source(str(src_filter))
-            ds = getattr(vectorstore, "docstore", None)
-            all_docs = getattr(ds, "_dict", {}).values() if ds else []
-            alt = []
-            for d in all_docs:
-                md = dict(d.metadata or {})
-                if _norm_source(str(md.get("source",""))) != wanted:
-                    continue
-                if md.get("kind") in ("title", "summary"):
-                    continue
-                alt.append({
-                    "text": d.page_content or "",
-                    "metadata": md,
-                    "score": 0.35,
-                })
-            if alt:
+
+            # [NEW] 유사도 검색으로 해당 소스의 청크 가져오기
+            try:
+                # vectorstore에서 유사도 검색 (k*3으로 넉넉하게)
+                search_results = vectorstore.similarity_search_with_score(q, k=max(k*3, 15))
+                alt = []
+                for d, dist in search_results:
+                    md = dict(d.metadata or {})
+                    if _norm_source(str(md.get("source",""))) != wanted:
+                        continue
+                    if md.get("kind") in ("title", "summary"):
+                        continue
+                    # 유사도 점수 계산 (L2 거리 → 유사도)
+                    sim = 1.0 - 0.5 * float(dist)
+                    sim = max(0.0, min(1.0, sim))
+                    alt.append({
+                        "text": d.page_content or "",
+                        "metadata": md,
+                        "score": sim,
+                    })
+
+                # 유사도순 정렬 후 상위 k개
+                alt.sort(key=lambda x: x["score"], reverse=True)
                 alt = alt[:k]
+
+            except Exception:
+                # 유사도 검색 실패 시 기존 방식 (전체 스캔)
+                ds = getattr(vectorstore, "docstore", None)
+                all_docs = getattr(ds, "_dict", {}).values() if ds else []
+                alt = []
+                for d in all_docs:
+                    md = dict(d.metadata or {})
+                    if _norm_source(str(md.get("source",""))) != wanted:
+                        continue
+                    if md.get("kind") in ("title", "summary"):
+                        continue
+                    alt.append({
+                        "text": d.page_content or "",
+                        "metadata": md,
+                        "score": 0.35,
+                    })
+                alt = alt[:k]
+
+            if alt:
                 items = []
                 contexts = []
                 for h in alt:
