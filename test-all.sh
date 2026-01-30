@@ -21,7 +21,8 @@ PROXY_URL="${PROXY_URL:-http://localhost:8080}"
 MCP_URL="${MCP_URL:-http://localhost:9898}"
 MODEL="${MODEL:-/model/Qwen2.5-14B-Instruct}"
 
-# 테스트용 파일/페이지 (필요 시 수정)
+# 테스트용 파일/페이지 (실제 환경에 맞게 수정 필요!)
+# 아래 명령으로 실제 파일 확인: curl -s "http://localhost:8080/index/stats" | jq '.sources[]'
 FILE_SRC="${FILE_SRC:-/app/uploads/3c67e1f9-f055-4be4-879e-d340be414b15_국세청_2025년 개정세법 요약.pdf}"
 PAGE_ID="${PAGE_ID:-268538899}"
 
@@ -239,6 +240,11 @@ fi
 # ----------------------------------------------------------------------------
 subsection "1.5 Router - File Hint"
 # ----------------------------------------------------------------------------
+# 이 테스트가 실패하면:
+# 1. FILE_SRC 변수가 실제 인덱스에 있는 파일인지 확인
+#    → curl -s "http://localhost:8080/index/stats" | jq '.sources[]'
+# 2. rag-router가 file_hint를 제대로 전달하는지 확인
+#    → docker logs rag-router | grep file_hint
 
 echo "Router with file metadata hint"
 resp=$(curl_timed "$ROUTER_URL/v1/chat/completions" "{
@@ -254,16 +260,22 @@ if [[ -n "$content" && "$content" != "null" ]]; then
   info "Preview: ${content:0:100}..."
 else
   failure "Router file hint failed"
+  info "Check: 1) Is FILE_SRC in index? 2) Router file_hint forwarding?"
 fi
 
 # ----------------------------------------------------------------------------
 subsection "1.6 Router - Forced Confluence (keyword)"
 # ----------------------------------------------------------------------------
+# 이 테스트가 실패하면:
+# 1. MCP Confluence 연결 확인
+#    → curl -s "http://localhost:9898/health" | jq
+# 2. .env에서 CONFLUENCE_BASE_URL, CONFLUENCE_TOKEN 확인
+# 3. Confluence에 "서비스플랫폼팀 배홍진 일일업무일지" 페이지가 있는지 확인
 
-echo "Query: '컨플루언스에서 배홍진 일일업무보고 최근 7일 요약'"
+echo "Query: '서비스플랫폼팀 배홍진 일일업무일지 최근 7일치 요약'"
 resp=$(curl_timed "$ROUTER_URL/v1/chat/completions" "{
   \"model\":\"$MODEL\",
-  \"messages\":[{\"role\":\"user\",\"content\":\"컨플루언스에서 배홍진 일일업무보고 최근 7일 요약\"}]
+  \"messages\":[{\"role\":\"user\",\"content\":\"서비스플랫폼팀 배홍진 일일업무일지 최근 7일치 요약\"}]
 }")
 content=$(echo "$resp" | safe_jq '.choices[0].message.content')
 
@@ -271,6 +283,7 @@ if [[ -n "$content" && "$content" != "null" ]]; then
   success "Forced Confluence (keyword) OK"
 else
   failure "Forced Confluence (keyword) failed"
+  info "Check: 1) MCP health 2) CONFLUENCE_* env vars 3) Query matches real page"
 fi
 
 # ----------------------------------------------------------------------------
@@ -293,18 +306,30 @@ fi
 # ----------------------------------------------------------------------------
 subsection "1.8 Router - NO_RAG Sanity"
 # ----------------------------------------------------------------------------
+# 이 테스트가 실패하면:
+# 1. Router 환경변수 확인
+#    → docker exec rag-router env | grep ROUTER_TRI_STATE
+#    → ROUTER_TRI_STATE=1 (3단계 라우팅 활성화)
+#    → ROUTER_TRI_STATE_ENFORCE=1 (NO_RAG시 RAG 건너뛰기)
+# 2. 응답에 "근거: 없음(LLM)" 포함되는지 확인
+# 3. Router 로그에서 라우팅 결정 확인
+#    → docker logs rag-router | grep route_state
 
-echo "Query: '메갈로돈 설명해줘' (should not use RAG)"
+echo "Query: '메갈로돈에 대해서 설명해주세요' (should not use RAG)"
 resp=$(curl_timed "$ROUTER_URL/v1/chat/completions" "{
   \"model\":\"$MODEL\",
-  \"messages\":[{\"role\":\"user\",\"content\":\"메갈로돈 설명해줘\"}]
+  \"messages\":[{\"role\":\"user\",\"content\":\"메갈로돈에 대해서 설명해주세요\"}]
 }")
 content=$(echo "$resp" | safe_jq '.choices[0].message.content')
 
 if [[ -n "$content" && "$content" != "null" ]]; then
   success "NO_RAG sanity OK"
+  if echo "$content" | grep -q "근거: 없음"; then
+    info "Confirmed: NO_RAG mode (no RAG context)"
+  fi
 else
   failure "NO_RAG sanity failed"
+  info "Check: ROUTER_TRI_STATE_ENFORCE=1 in .env"
 fi
 
 # ============================================================================
