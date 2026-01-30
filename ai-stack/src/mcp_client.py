@@ -8,6 +8,8 @@ from typing import Any, Dict, List
 
 MCP_URL = os.getenv("MCP_URL", "http://mcp-atlassian:9000/mcp").rstrip("/")
 PROTO = os.getenv("MCP_PROTOCOL_VERSION", "2025-06-18")
+MCP_HTTP_BASE_URL = os.getenv("MCP_HTTP_BASE_URL", "").rstrip("/")
+MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "").lower()
 
 # [# ADDED] Confluence Space 강제 제한(없으면 None)
 CONF_SPACE = os.getenv("CONFLUENCE_SPACE") or os.getenv("CONF_DEFAULT_SPACE") or None
@@ -35,6 +37,29 @@ def _is_meta_query(q: str) -> bool:  # [ADDED]
     s = (q or "").lower()
     return any(re.search(p, s) for p in _META_PATTERNS)
 
+def _http_base_from_mcp_url(url: str) -> str:
+    if not url:
+        return ""
+    base = url.split("?", 1)[0]
+    if "/sse" in base:
+        base = base.split("/sse", 1)[0]
+    return base.rstrip("/")
+
+def _should_use_http_mirror(url: str) -> bool:
+    if MCP_HTTP_BASE_URL:
+        return True
+    if MCP_TRANSPORT == "sse":
+        return True
+    return "/sse" in (url or "")
+
+_PAGEID_RE = re.compile(r"(?:^confluence://|[?&]pageId=)(\d+)")
+
+def _page_id_from_uri(uri: str) -> str:
+    if not uri:
+        return ""
+    m = _PAGEID_RE.search(uri)
+    return m.group(1) if m else ""
+
 def _new_session_url(base: str) -> str:
     """
     POST /mcp -> 307 + Location: /mcp/<session-id>/events 로 세션 생성
@@ -57,11 +82,15 @@ class MCP:
 
     def __init__(self, url: str | None = None, protocol: str | None = None):
         self._base = (url or MCP_URL).rstrip("/")
+        self._use_http = _should_use_http_mirror(self._base)
+        self._http_base = MCP_HTTP_BASE_URL or _http_base_from_mcp_url(self._base)
         if protocol:
             BASE_HEADERS["MCP-Protocol-Version"] = protocol
-        self.session = _new_session_url(self._base)
+        self.session = None if self._use_http else _new_session_url(self._base)
 
     def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self._use_http or not self.session:
+            raise RuntimeError("MCP streamable session is not initialized; use HTTP mirror endpoints.")
         r = requests.post(self.session, headers=BASE_HEADERS, json=payload, timeout=60)
         r.raise_for_status()
         # FastMCP는 SSE 프레이밍도 쓰지만, 기본 응답은 JSON 한 건임
@@ -88,9 +117,25 @@ class MCP:
         if _is_meta_query(query):
             return []
         args: Dict[str, Any] = {"query": query, "limit": limit}
+        if space or CONF_SPACE:
+            args["space"] = space or CONF_SPACE
+        if self._use_http:
+            if not self._http_base:
+                raise RuntimeError("MCP_HTTP_BASE_URL is not set for HTTP mirror.")
+            r = requests.post(f"{self._http_base}/tool/search", json=args, timeout=30)
+            r.raise_for_status()
+            items = (r.json() or {}).get("items", []) or []
+            uris: List[str] = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                pid = (it.get("id") or it.get("page_id") or "").strip()
+                if not pid:
+                    pid = _page_id_from_uri(it.get("url") or "")
+                if pid:
+                    uris.append(f"confluence://{pid}")
+            return uris
         # [# CHANGED] space가 지정되지 않았을 때도 환경변수 강제 적용
-        if space or CONF_SPACE:  # [# ADDED]
-            args["space"] = space or CONF_SPACE  # [# ADDED]
         tool = os.getenv("CONFLUENCE_TOOL_SEARCH", "search_pages")
         res = self._post({
             "jsonrpc": "2.0",
@@ -135,6 +180,21 @@ class MCP:
         return [u for u in uris if isinstance(u, str) and u.startswith("confluence://")]
 
     def read(self, uri: str) -> dict:
+        if self._use_http:
+            if not self._http_base:
+                raise RuntimeError("MCP_HTTP_BASE_URL is not set for HTTP mirror.")
+            page_id = _page_id_from_uri(uri)
+            if not page_id:
+                raise RuntimeError(f"Invalid MCP uri: {uri!r}")
+            r = requests.get(f"{self._http_base}/tool/page_text/{page_id}", timeout=30)
+            r.raise_for_status()
+            j = r.json() or {}
+            meta = {
+                "title": j.get("title"),
+                "space": j.get("space"),
+                "url": j.get("url"),
+            }
+            return {"uri": uri, "text": j.get("text") or "", "meta": meta}
         res = self._post({
             "jsonrpc": "2.0",
             "id": 4,

@@ -1,4 +1,4 @@
-# rag-router/app.py
+﻿# rag-router/app.py
 from __future__ import annotations
 
 from fastapi import FastAPI
@@ -13,6 +13,7 @@ from functools import lru_cache
 
 RAG = os.getenv("RAG_PROXY_URL", "http://rag-proxy:8080")
 OPENAI = os.getenv("OPENAI_URL", "http://172.16.10.168:9993/v1")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "/model/Qwen2.5-14B-Instruct")
 ROUTER_MODEL_ID = os.getenv("ROUTER_MODEL_ID", "qwen3-30b-a3b-fp8-router")
 TZ = os.getenv("ROUTER_TZ", "Asia/Seoul")
@@ -31,6 +32,11 @@ _CONTEXT_CUT_RE = re.compile(
     r"\s*[-\u2013\u2014]{2,}\s*\[?context\]?\s*.*$|\s*[-\u2013\u2014]{2,}\s*\[?\uCEE8\uD14D\uC2A4\uD2B8\]?\s*.*$",
     re.I | re.S,
 )
+
+def _openai_headers() -> dict:
+    if not OPENAI_API_KEY:
+        return {}
+    return {"Authorization": f"Bearer {OPENAI_API_KEY}"}
 
 ROUTER_STRICT_RAG = (os.getenv("ROUTER_STRICT_RAG", "1").lower() not in ("0","false","no"))
 ANSWER_MIN_OVERLAP = float(os.getenv("ROUTER_ANSWER_MIN_OVERLAP", "0.12"))
@@ -690,7 +696,7 @@ async def _rewrite_query(user_msg: str, raw_msgs: list[dict]) -> tuple[str, dict
     }
     async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
         try:
-            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            r = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
             rj = r.json()
             raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             raw = raw.strip()
@@ -732,7 +738,7 @@ async def _ensure_korean(text: str, req: "ChatReq") -> str:
     }
     async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
         try:
-            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            r = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
             rj = r.json()
             raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             cleaned = sanitize(clean_llm_output(raw)) or text
@@ -763,13 +769,13 @@ async def _llm_direct_answer(limited_msgs: list[dict], req: "ChatReq") -> str:
     }
     async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
         try:
-            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            r = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
             rj = r.json()
             raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             if ROUTER_DEBUG and not raw:
                 _dbg(f"llm_empty: status={r.status_code} keys={list(rj.keys())} err={rj.get('error')}")
             if not raw:
-                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
                 rj2 = r2.json()
                 raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             content = sanitize(clean_llm_output(raw)) or "죄송해요. 지금은 답을 찾지 못했어요."
@@ -782,7 +788,7 @@ async def _llm_direct_answer(limited_msgs: list[dict], req: "ChatReq") -> str:
                     "질문과 무관한 내용은 답하지 마세요."
                 )
                 payload["messages"] = [sysmsg] + limited_msgs
-                r3 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                r3 = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
                 rj3 = r3.json()
                 raw3 = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 content = sanitize(clean_llm_output(raw3)) or content
@@ -1107,7 +1113,7 @@ async def _llm_route_state(
     try:
         timeout = httpx.Timeout(ROUTER_LLM_ROUTE_TIMEOUT)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            r = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
             data = r.json()
         text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
         if ROUTER_LLM_ROUTE_SCORE:
@@ -1730,7 +1736,7 @@ async def chat(req: ChatReq):
         }
         try:
             async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
-                r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                r = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
                 j = r.json()
 
                 # ★ 추가: 메타 태스크 응답도 think 제거
@@ -1967,7 +1973,7 @@ async def chat(req: ChatReq):
         }
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
-                r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                r = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
                 rj = r.json()
                 raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 if ROUTER_DEBUG and not raw:
@@ -1975,7 +1981,7 @@ async def chat(req: ChatReq):
                 if not raw:
                     short_ctx = ctx_for_prompt[:2000]
                     payload["messages"] = [{"role":"system","content":build_final_only_prompt(short_ctx)}] + [{"role":"user","content": clean_user_msg}]
-                    r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                    r2 = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
                     rj2 = r2.json()
                     raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             except (httpx.RequestError, ValueError) as e:
@@ -1990,7 +1996,7 @@ async def chat(req: ChatReq):
                 _dbg("qa_force_context_retry")
                 payload["messages"] = [{"role":"system","content":build_force_context_prompt(ctx_for_prompt)}] + [{"role":"user","content": clean_user_msg}]
                 async with httpx.AsyncClient(timeout=timeout) as retry_client:
-                    r3 = await retry_client.post(f"{OPENAI}/chat/completions", json=payload)
+                    r3 = await retry_client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
                     rj3 = r3.json()
                 raw = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 cleaned = clean_llm_output(raw)
@@ -2383,7 +2389,7 @@ async def chat(req: ChatReq):
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            r = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            r = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
             rj = r.json()
             raw = rj.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             if ROUTER_DEBUG and not raw:
@@ -2392,13 +2398,13 @@ async def chat(req: ChatReq):
                 _dbg("query_retry_due_to_basis_none")
                 short_ctx = ctx_for_prompt[:2000]
                 payload["messages"] = [{"role":"system","content":build_final_only_prompt(short_ctx)}] + [{"role":"user","content": clean_user_msg}]
-                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
                 rj2 = r2.json()
                 raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             if not raw:
                 short_ctx = ctx_for_prompt[:2000]
                 payload["messages"] = [{"role":"system","content":build_final_only_prompt(short_ctx)}] + [{"role":"user","content": clean_user_msg}]
-                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+                r2 = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
                 rj2 = r2.json()
                 raw = rj2.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
         except (httpx.RequestError, ValueError) as e:
@@ -2412,7 +2418,7 @@ async def chat(req: ChatReq):
         try:
             _dbg("query_force_context_retry")
             payload["messages"] = [{"role":"system","content":build_force_context_prompt(ctx_for_prompt)}] + [{"role":"user","content": clean_user_msg}]
-            r3 = await client.post(f"{OPENAI}/chat/completions", json=payload)
+            r3 = await client.post(f"{OPENAI}/chat/completions", json=payload, headers=_openai_headers())
             rj3 = r3.json()
             raw = rj3.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
             cleaned = clean_llm_output(raw)

@@ -58,6 +58,7 @@ MCP_MAX_TASKS     = int(os.getenv("MCP_MAX_TASKS", "4"))       # 동시 질의 �
 TZ_NAME = getattr(settings, "TZ_NAME", "Asia/Seoul")
 
 CONFLUENCE_BASE_URL = os.getenv("CONFLUENCE_BASE_URL", "").rstrip("/")
+MCP_HTTP_BASE_URL = os.getenv("MCP_HTTP_BASE_URL", "").rstrip("/")
 
 LOCAL_FIRST = bool(getattr(settings, "LOCAL_FIRST", True))
 LOCAL_BONUS = float(getattr(settings, "LOCAL_BONUS", 0.25))
@@ -443,6 +444,8 @@ def _spaces_from_env():
 ENV_SPACES = _spaces_from_env()
 
 def _mcp_http_base() -> str:
+    if MCP_HTTP_BASE_URL:
+        return MCP_HTTP_BASE_URL
     url = os.getenv("MCP_URL", "").strip()
     if not url:
         return ""

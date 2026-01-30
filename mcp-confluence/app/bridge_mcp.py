@@ -13,7 +13,7 @@ app = FastAPI()
 
 # ※ 도커 네트워크 내부 호출은 서비스명 사용 권장
 RAG   = os.environ.get("RAG_PROXY", "http://rag-proxy:8080").rstrip("/")
-MCP   = os.environ.get("MCP_BASE",  "http://mcp-confluence:9001").rstrip("/")
+MCP   = os.environ.get("MCP_BASE",  "http://mcp-confluence:9000").rstrip("/")
 TOP_K = int(os.environ.get("TOP_K", "5"))
 
 # [# CHANGED] 기본 임계값을 낮추고(0.65 권장), 환경변수로 조절

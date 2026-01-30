@@ -117,7 +117,7 @@ services:
       - type: bind
         source: ${STORAGE_ROOT}/open-webui-data
         target: /data
-        read_only: true
+        read_only: false
         bind:
           create_host_path: true
       - "${STORAGE_ROOT}/open-webui-data:/app/backend/data"
