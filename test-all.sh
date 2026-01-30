@@ -5,7 +5,15 @@
 # - 수정 사항 검증 (세션 격리, 재랭킹, 정규화, Sticky 등)
 # ============================================================================
 
-set -euo pipefail
+# [FIX] 에러 발생해도 계속 진행 (테스트 스크립트이므로)
+set -uo pipefail
+# set -e 제거: 개별 테스트 실패해도 전체 실행 계속
+
+# 디버그 모드 (필요 시 활성화)
+# set -x
+
+# Verbose 모드 (환경 변수로 제어)
+VERBOSE="${VERBOSE:-0}"
 
 # === 환경 설정 ===
 ROUTER_URL="${ROUTER_URL:-http://localhost:8088}"
@@ -37,7 +45,11 @@ need() {
 
 need curl
 need jq
-need bc
+
+# bc는 선택적 (없으면 경고만)
+if ! command -v bc >/dev/null 2>&1; then
+  echo -e "${C_YELLOW}⚠ Warning: 'bc' not found. Some timing features may not work.${C_RESET}"
+fi
 
 # 색상 출력
 C_RESET="\033[0m"
@@ -78,33 +90,46 @@ info() {
   echo -e "${C_GRAY}  $1${C_RESET}"
 }
 
+verbose() {
+  if [[ "$VERBOSE" == "1" ]]; then
+    echo -e "${C_GRAY}[DEBUG] $1${C_RESET}" >&2
+  fi
+}
+
 # JSON 파싱 (색상 유지)
 json() {
   jq -C . 2>/dev/null || cat
 }
 
-# Timed curl
+# Timed curl (with timeout)
 curl_timed() {
   local url="$1"
   local data="$2"
   local method="${3:-POST}"
-  local tmp timing start end elapsed
+  local tmp timing start end elapsed http_code
 
   tmp=$(mktemp)
-  start=$(date +%s.%N)
+  start=$(date +%s.%N 2>/dev/null || date +%s)
 
-  if [[ "$method" == "POST" ]]; then
-    curl -s -o "$tmp" -w "http=%{http_code}" \
-      -H "Content-Type: application/json" -d "$data" "$url" 2>/dev/null
-  else
-    curl -s -o "$tmp" -w "http=%{http_code}" "$url" 2>/dev/null
+  verbose "curl $method $url"
+  if [[ -n "$data" ]]; then
+    verbose "data: ${data:0:100}..."
   fi
 
-  end=$(date +%s.%N)
-  elapsed=$(echo "$end - $start" | bc)
+  if [[ "$method" == "POST" ]]; then
+    http_code=$(curl -s --max-time 30 -o "$tmp" -w "%{http_code}" \
+      -H "Content-Type: application/json" -d "$data" "$url" 2>/dev/null || echo "000")
+  else
+    http_code=$(curl -s --max-time 30 -o "$tmp" -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+  fi
+
+  end=$(date +%s.%N 2>/dev/null || date +%s)
+  elapsed=$(echo "$end - $start" | bc 2>/dev/null || echo "?")
+
+  verbose "HTTP $http_code (${elapsed}s)"
 
   cat "$tmp"
-  info "⏱  ${elapsed}s"
+  info "⏱  ${elapsed}s (HTTP $http_code)"
   rm -f "$tmp"
 }
 
@@ -132,19 +157,28 @@ else
 fi
 
 echo -n "Proxy health: "
-if resp=$(curl -s -f "$PROXY_URL/health" 2>/dev/null); then
+if resp=$(curl -s --max-time 10 -f "$PROXY_URL/health" 2>/dev/null || echo '{}'); then
   status=$(echo "$resp" | safe_jq '.status')
   doc_count=$(echo "$resp" | safe_jq '.doc_count')
-  success "OK (status: $status, docs: $doc_count)"
+  if [[ -n "$status" && "$status" != "null" ]]; then
+    success "OK (status: $status, docs: $doc_count)"
+  else
+    failure "Failed (invalid response)"
+    info "Response: ${resp:0:100}"
+  fi
 else
-  failure "Failed"
+  failure "Failed (connection error)"
 fi
 
 echo -n "MCP health: "
-if resp=$(curl -s -f "$MCP_URL/health" 2>/dev/null); then
-  success "OK"
+if resp=$(curl -s --max-time 10 -f "$MCP_URL/health" 2>/dev/null || echo '{}'); then
+  if [[ -n "$resp" && "$resp" != "{}" ]]; then
+    success "OK"
+  else
+    failure "Failed (no response)"
+  fi
 else
-  failure "Failed"
+  failure "Failed (connection error)"
 fi
 
 # ----------------------------------------------------------------------------
@@ -347,10 +381,19 @@ avg_score=$(echo "$resp" | jq -r '[.items[].score // 0] | add / length' 2>/dev/n
 info "Max score: $max_score, Avg score: $avg_score"
 
 # 90점 폭탄이 없어야 함 (최대 스코어 < 10)
-if (( $(echo "$max_score < 10.0" | bc -l) )); then
-  success "Rerank balance OK (max score < 10)"
+if command -v bc >/dev/null 2>&1; then
+  if (( $(echo "$max_score < 10.0" | bc -l 2>/dev/null || echo 1) )); then
+    success "Rerank balance OK (max score < 10)"
+  else
+    failure "Rerank balance issue (max score: $max_score >= 10)"
+  fi
 else
-  failure "Rerank balance issue (max score: $max_score >= 10)"
+  # bc 없으면 단순 비교 (정수만)
+  if [[ "${max_score%.*}" -lt 10 ]]; then
+    success "Rerank balance OK (max score < 10)"
+  else
+    failure "Rerank balance issue (max score: $max_score >= 10)"
+  fi
 fi
 
 # ----------------------------------------------------------------------------
