@@ -6,22 +6,34 @@ RAG_URL="http://localhost:8080"
 
 echo "Starting bulk reindex from $UPLOAD_DIR..."
 
+# find로 파일 찾기
 count=0
-total=$(find "$UPLOAD_DIR" -type f \( -name "*.pdf" -o -name "*.pptx" -o -name "*.docx" -o -name "*.xlsx" \) 2>/dev/null | wc -l)
+total=$(find "$UPLOAD_DIR" -maxdepth 1 -type f \( -name "*.pdf" -o -name "*.pptx" -o -name "*.docx" -o -name "*.xlsx" \) | wc -l)
 
-for file in "$UPLOAD_DIR"/*.{pdf,pptx,docx,xlsx} 2>/dev/null; do
-  [ -f "$file" ] || continue
-  
+echo "Found $total files to index"
+echo ""
+
+find "$UPLOAD_DIR" -maxdepth 1 -type f \( -name "*.pdf" -o -name "*.pptx" -o -name "*.docx" -o -name "*.xlsx" \) | sort | while read -r file; do
   ((count++))
   basename=$(basename "$file")
   echo "[$count/$total] Indexing: $basename"
   
-  curl -s -X POST "$RAG_URL/ingest" \
+  result=$(curl -s -X POST "$RAG_URL/ingest" \
     -F "file=@$file" \
-    -F "overwrite=true" \
-    | jq -r '.indexed // .error // "unknown"'
+    -F "overwrite=true")
   
-  sleep 0.3
+  indexed=$(echo "$result" | jq -r '.indexed // empty')
+  error=$(echo "$result" | jq -r '.error // .detail // empty')
+  
+  if [ -n "$indexed" ]; then
+    echo "  ✓ Indexed $indexed chunks"
+  elif [ -n "$error" ]; then
+    echo "  ✗ Error: $error"
+  else
+    echo "  ? Unknown response"
+  fi
+  
+  sleep 0.2
 done
 
 echo ""
