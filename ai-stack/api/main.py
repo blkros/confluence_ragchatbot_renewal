@@ -1087,7 +1087,8 @@ def _preseg_stop_phrases(q: str) -> str:
     return _STOP_SUFFIX_RE.sub(" ", q)
 
 def _tokenize_query(q: str) -> List[str]:
-    q = _preseg_stop_phrases(_basic_normalize(q))
+    # [FIX] 통합 정규화 함수 사용 (공백 처리 포함)
+    q = _preseg_stop_phrases(normalize_text_for_search(q, preserve_spaces=False))
     raw = _TOK_RE.findall(q or "")
     toks = []
     for t in raw:
@@ -1101,12 +1102,14 @@ def _keyword_overlap_score(q_tokens: List[str], text: str, title: str = "") -> f
     """간단한 스파스 점수: 토큰 교집합 비율 + 제목 매치 보너스"""
     if not q_tokens:
         return 0.0
+    # [FIX] 텍스트/제목도 정규화하여 매칭
     # 텍스트는 길 수 있으니 앞부분만 얇게 보지만, 제목은 풀로 본다
-    body = (text or "")[:1200]
+    body = normalize_text_for_search((text or "")[:1200], preserve_spaces=False)
     hits = sum(1 for t in q_tokens if t in body)
     base = hits / max(4, len(q_tokens))          # 토큰 일부만 맞아도 0.x 점수
     if title:
-        title_hits = sum(1 for t in q_tokens if t in title)
+        norm_title = normalize_text_for_search(title, preserve_spaces=False)
+        title_hits = sum(1 for t in q_tokens if t in norm_title)
         if title_hits:
             base += TITLE_BONUS         # 제목 매치 보너스 (가산점)
     return float(base)
