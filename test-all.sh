@@ -88,7 +88,7 @@ skip() {
 }
 
 info() {
-  echo -e "${C_GRAY}  $1${C_RESET}"
+  echo -e "${C_GRAY}  $1${C_RESET}" >&2
 }
 
 verbose() {
