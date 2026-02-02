@@ -21,3 +21,7 @@ mcp-confluence/.env
 # os / ide
 .DS_Store
 .vscode/
+
+# obsidian
+.githooks/
+hook_debug.log
