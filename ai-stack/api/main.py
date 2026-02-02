@@ -2091,7 +2091,87 @@ async def uploads_reset():
         return {"status":"ok", "deleted":count}
     except Exception as e:
         raise HTTPException(500, f"uploads reset failed: {e}")
-    
+
+
+# ------- Query Clarification Helpers -------
+def _detect_ambiguity(q: str, items: list, contexts: list) -> bool:
+    """
+    질의가 모호한지 판단:
+    1. top-1 score가 낮음 (< 0.6)
+    2. 여러 source에서 결과가 나옴 (다양성 높음)
+    3. 질의에 모호한 키워드 포함 ("요약", "내용", "정리" 등)
+    """
+    if not items:
+        return False
+
+    # 1) Score check
+    scores = sorted([float(it.get("score") or 0.0) for it in items], reverse=True)
+    top1_score = scores[0] if scores else 0.0
+
+    # 2) Source diversity check
+    sources = set()
+    for it in items:
+        md = it.get("metadata") or {}
+        src = md.get("source") or md.get("url") or ""
+        if src:
+            sources.add(src)
+
+    # 3) Vague keyword check
+    vague_keywords = ["요약", "내용", "정리", "설명", "알려", "뭐", "무엇"]
+    q_lower = q.lower()
+    has_vague = any(kw in q_lower for kw in vague_keywords)
+
+    # 모호함 판정: score가 낮고, 여러 source에서 나오고, 모호한 키워드 포함
+    is_ambiguous = (top1_score < 0.6) and (len(sources) >= 2) and has_vague
+
+    return is_ambiguous
+
+
+def _extract_candidates(items: list, contexts: list, max_candidates: int = 5) -> list:
+    """
+    items/contexts에서 후보 문서들을 추출하여 사용자에게 선택지로 제공.
+    source별로 그룹핑하고 title + preview를 포함.
+    """
+    source_map = {}  # source -> {title, score, type, preview}
+
+    for it in items:
+        md = it.get("metadata") or {}
+        src = md.get("source") or md.get("url") or ""
+        if not src:
+            continue
+
+        title = md.get("title") or "제목 없음"
+        score = float(it.get("score") or 0.0)
+        text = it.get("text") or ""
+
+        # Determine type (PDF, Confluence, etc.)
+        doc_type = "confluence"
+        if ".pdf" in src.lower():
+            doc_type = "pdf"
+        elif ".docx" in src.lower():
+            doc_type = "docx"
+        elif ".pptx" in src.lower():
+            doc_type = "pptx"
+
+        # Group by source (keep highest score)
+        if src not in source_map or score > source_map[src]["score"]:
+            source_map[src] = {
+                "title": title,
+                "source": src,
+                "score": score,
+                "type": doc_type,
+                "preview": text[:150] + ("..." if len(text) > 150 else "")
+            }
+
+    # Sort by score and limit
+    candidates = sorted(source_map.values(), key=lambda x: x["score"], reverse=True)[:max_candidates]
+
+    # Add id for selection
+    for idx, cand in enumerate(candidates, start=1):
+        cand["id"] = idx
+
+    return candidates
+
 
 @app.post("/query", include_in_schema=False)
 async def query(payload: dict = Body(...)):
@@ -2181,6 +2261,15 @@ async def query(payload: dict = Body(...)):
     src_filter = (payload or {}).get("source")
     src_list   = (payload or {}).get("sources")
     src_set    = set(map(str, src_list)) if isinstance(src_list, list) and src_list else None
+
+    # [ADD] clarification_choice 파라미터 (사용자가 선택한 문서 source)
+    # 첫 요청에서 ambiguity 감지 → candidates 반환
+    # 두번째 요청에서 clarification_choice로 source를 받아 src_filter로 사용
+    clarification_choice = (payload or {}).get("clarification_choice")
+    if clarification_choice and not src_filter:
+        # clarification_choice가 source URL이면 그대로 사용
+        src_filter = str(clarification_choice)
+        log.info("Using clarification_choice as src_filter: %s", src_filter)
 
     # early forced_page_id (source에 pageId가 있으면 우선, 없으면 위에서 뽑은 page_id)
     forced_page_id = _extract_page_id(src_filter) if src_filter else None
@@ -3005,6 +3094,21 @@ async def query(payload: dict = Body(...)):
 
     src_urls = _collect_source_urls_from_contexts(contexts)
     src_urls = _filter_urls(src_urls)
+
+    # [ADD] Query Clarification: 모호한 질의에 대해 후보 문서 선택 요청
+    # clarification_choice가 없고(첫 요청), 결과가 모호하면 clarification 응답 반환
+    if not clarification_choice and _detect_ambiguity(q, items, contexts):
+        candidates = _extract_candidates(items, contexts, max_candidates=5)
+        if candidates:
+            log.info("Query ambiguous, returning clarification candidates: q=%r, count=%d", q, len(candidates))
+            return {
+                "hits": 0,
+                "clarification_needed": True,
+                "message": f"'{q}'에 대한 문서가 여러 개 있습니다. 어떤 것을 원하시나요?",
+                "candidates": candidates,
+                "trace_id": trace_id,
+                "notes": base_notes | {"clarification_triggered": True},
+            }
 
     return {
         "hits": len(items),
