@@ -26,6 +26,9 @@ services:
       - "${STORAGE_ROOT}/index:/app/faiss_index"
       - "${STORAGE_ROOT}/data:/app/data"
       - "${STORAGE_ROOT}/hf:/cache/hf"
+      # Development: mount source code for hot reload
+      - "./ai-stack/api:/app/api:ro"
+      - "./ai-stack/src:/app/src:ro"
 
   rag-router:
     container_name: rag-router
