@@ -58,6 +58,20 @@ def _host_allowed(url: str) -> bool:
     host = host.lower()
     return any(host == h or host.endswith("." + h) for h in _ALLOWED_HOSTS)
 
+def _normalize_query_for_cache(q: str) -> str:
+    """
+    Normalize query for cache key consistency.
+    Handles spacing between ASCII and Korean characters so "OCPP스펙" and "OCPP 스펙" map to same key.
+    """
+    if not q:
+        return ""
+    # Insert space between ASCII and Korean/CJK characters
+    q = re.sub(r'([A-Za-z0-9])([가-힣ㄱ-ㅎㅏ-ㅣ\u4e00-\u9fff])', r'\1 \2', q)
+    q = re.sub(r'([가-힣ㄱ-ㅎㅏ-ㅣ\u4e00-\u9fff])([A-Za-z0-9])', r'\1 \2', q)
+    # Collapse multiple spaces to single space
+    q = re.sub(r'\s+', ' ', q)
+    return q.strip().lower()
+
 async def mcp_search(
     query: str,
     limit: int = 5,
@@ -65,7 +79,9 @@ async def mcp_search(
     space: str | None = None,
     langs: List[str] | None = None
 ) -> List[Dict[str, Any]]:
-    cache_key = (query, limit, space or "", ",".join(langs or []))
+    # Normalize query for cache key so "OCPP스펙" and "OCPP 스펙" share same cache
+    query_normalized = _normalize_query_for_cache(query)
+    cache_key = (query_normalized, limit, space or "", ",".join(langs or []))
     if MCP_CACHE_TTL > 0:
         cached = _MCP_CACHE.get(cache_key)
         if cached and (cached[0] + MCP_CACHE_TTL) > time.monotonic():
