@@ -305,9 +305,11 @@ def _domainish_dynamic(q: str) -> bool:
     - 대문자 약어가 있으면 즉시 True
     - 아니면 질의 토큰 중 space-편중(purity)이 높은 토큰이 일정 개수 이상 있으면 True
     """
-    # NORMALIZE query first so "OCPP스펙" → "OCPP 스펙" for acronym detection
-    q_normalized = normalize_text_for_search(q, preserve_spaces=True)
-    if _ACRONYM_BLOB_RE.search(q_normalized or ""):
+    # Insert spaces between ASCII and Korean/CJK for acronym detection
+    # "OCPP스펙" → "OCPP 스펙" so \b[A-Z]{2,10}\b can match
+    q_spaced = re.sub(r'([A-Za-z0-9])([가-힣ㄱ-ㅎㅏ-ㅣ\u4e00-\u9fff])', r'\1 \2', q or "")
+    q_spaced = re.sub(r'([가-힣ㄱ-ㅎㅏ-ㅣ\u4e00-\u9fff])([A-Za-z0-9])', r'\1 \2', q_spaced)
+    if _ACRONYM_BLOB_RE.search(q_spaced):
         return True
     toks = [t for t in _tokenize_query(_basic_normalize(q))
             if len(t) >= 2 and t not in _K_STOP]
