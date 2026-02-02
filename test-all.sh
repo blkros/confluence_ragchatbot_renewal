@@ -118,10 +118,10 @@ curl_timed() {
   fi
 
   if [[ "$method" == "POST" ]]; then
-    http_code=$(curl -s --max-time 30 -o "$tmp" -w "%{http_code}" \
+    http_code=$(curl -s --max-time 60 -o "$tmp" -w "%{http_code}" \
       -H "Content-Type: application/json" -d "$data" "$url" 2>/dev/null || echo "000")
   else
-    http_code=$(curl -s --max-time 30 -o "$tmp" -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+    http_code=$(curl -s --max-time 60 -o "$tmp" -w "%{http_code}" "$url" 2>/dev/null || echo "000")
   fi
 
   end=$(date +%s.%N 2>/dev/null || date +%s)
