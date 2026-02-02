@@ -23,8 +23,8 @@ MODEL="${MODEL:-/model/Qwen2.5-14B-Instruct}"
 
 # 테스트용 파일/페이지 (실제 환경에 맞게 수정 필요!)
 # 아래 명령으로 실제 파일 확인: curl -s "http://localhost:8080/index/stats" | jq '.sources[]'
-FILE_SRC="${FILE_SRC:-/app/uploads/3c67e1f9-f055-4be4-879e-d340be414b15_국세청_2025년 개정세법 요약.pdf}"
-PAGE_ID="${PAGE_ID:-268538899}"
+FILE_SRC="${FILE_SRC:-/app/uploads/국세청_2025년 근로자를 위한 신고안내.pdf}"
+PAGE_ID="${PAGE_ID:-268538628}"
 
 # 세션 ID
 SESSION_1="test-session-$(date +%s)-1"
@@ -433,11 +433,11 @@ subsection "2.3 정규화 불일치 - 공백 변형 검색"
 # ----------------------------------------------------------------------------
 
 echo "Query 1: 'OCPP 스펙' (with space)"
-resp1=$(curl -s "$PROXY_URL/query" -d '{"q":"OCPP 스펙","k":3}')
+resp1=$(curl -s "$PROXY_URL/query" -H "Content-Type: application/json" -d '{"q":"OCPP 스펙","k":3}')
 hits1=$(echo "$resp1" | safe_jq '.hits')
 
 echo "Query 2: 'OCPP스펙' (no space)"
-resp2=$(curl -s "$PROXY_URL/query" -d '{"q":"OCPP스펙","k":3}')
+resp2=$(curl -s "$PROXY_URL/query" -H "Content-Type: application/json" -d '{"q":"OCPP스펙","k":3}')
 hits2=$(echo "$resp2" | safe_jq '.hits')
 
 info "Hits with space: $hits1, Hits without space: $hits2"
@@ -465,7 +465,7 @@ info "Current document count: $doc_count"
 
 if [[ "$doc_count" =~ ^[0-9]+$ && "$doc_count" -gt 20000 ]]; then
   echo "Query: 'OCPP specification' (large corpus test)"
-  resp=$(curl -s "$PROXY_URL/query" -d '{"q":"OCPP specification","k":5}')
+  resp=$(curl -s "$PROXY_URL/query" -H "Content-Type: application/json" -d '{"q":"OCPP specification","k":5}')
   hits=$(echo "$resp" | safe_jq '.hits')
 
   if [[ "$hits" =~ ^[0-9]+$ && "$hits" -gt 0 ]]; then
