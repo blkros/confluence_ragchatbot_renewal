@@ -2127,13 +2127,16 @@ def _detect_ambiguity(q: str, items: list, contexts: list) -> bool:
     return is_ambiguous
 
 
-def _extract_candidates(items: list, contexts: list, max_candidates: int = 5) -> list:
+def _extract_candidates(items: list, contexts: list, pool_hits: list = None, max_candidates: int = 5) -> list:
     """
-    items/contexts에서 후보 문서들을 추출하여 사용자에게 선택지로 제공.
+    items/contexts/pool_hits에서 후보 문서들을 추출하여 사용자에게 선택지로 제공.
     source별로 그룹핑하고 title + preview를 포함.
+
+    pool_hits를 포함함으로써 FAISS에서 찾은 원본 결과(PDF 등)도 후보에 포함됨.
     """
     source_map = {}  # source -> {title, score, type, preview}
 
+    # 1) items에서 후보 추출 (MCP 결과 등)
     for it in items:
         md = it.get("metadata") or {}
         src = md.get("source") or md.get("url") or ""
@@ -2155,6 +2158,35 @@ def _extract_candidates(items: list, contexts: list, max_candidates: int = 5) ->
 
         # Group by source (keep highest score)
         if src not in source_map or score > source_map[src]["score"]:
+            source_map[src] = {
+                "title": title,
+                "source": src,
+                "score": score,
+                "type": doc_type,
+                "preview": text[:150] + ("..." if len(text) > 150 else "")
+            }
+
+    # 2) pool_hits에서도 후보 추출 (FAISS 원본 결과)
+    if pool_hits:
+        for hit in pool_hits[:20]:  # 상위 20개만 확인
+            md = hit.get("metadata") or {}
+            src = md.get("source") or ""
+            if not src or src in source_map:  # 이미 있으면 스킵
+                continue
+
+            title = md.get("title") or "제목 없음"
+            score = float(hit.get("score") or 0.0)
+            text = hit.get("text") or ""
+
+            # Determine type
+            doc_type = "confluence"
+            if ".pdf" in src.lower():
+                doc_type = "pdf"
+            elif ".docx" in src.lower():
+                doc_type = "docx"
+            elif ".pptx" in src.lower():
+                doc_type = "pptx"
+
             source_map[src] = {
                 "title": title,
                 "source": src,
@@ -3098,7 +3130,7 @@ async def query(payload: dict = Body(...)):
     # [ADD] Query Clarification: 모호한 질의에 대해 후보 문서 선택 요청
     # clarification_choice가 없고(첫 요청), 결과가 모호하면 clarification 응답 반환
     if not clarification_choice and _detect_ambiguity(q, items, contexts):
-        candidates = _extract_candidates(items, contexts, max_candidates=5)
+        candidates = _extract_candidates(items, contexts, pool_hits=pool_hits, max_candidates=5)
         if candidates:
             log.info("Query ambiguous, returning clarification candidates: q=%r, count=%d", q, len(candidates))
             return {
