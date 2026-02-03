@@ -695,27 +695,46 @@ def _get_clarification_choice(session_id: str, choice_num: int) -> str | None:
     return None
 
 def _format_clarification_message(candidates: list, message: str) -> str:
-    """후보 목록을 마크다운 형식으로 포맷"""
+    """후보 목록을 마크다운 형식으로 포맷 (숨겨진 SOURCE 태그 포함)"""
     lines = [message, ""]
     for cand in candidates:
         cand_id = cand.get("id", 0)
         title = cand.get("title", "제목 없음")
         doc_type = cand.get("type", "문서")
         preview = cand.get("preview", "")
+        source = cand.get("source", "")
 
         # 미리보기 텍스트 짧게 자르기
         if len(preview) > 80:
             preview = preview[:80] + "..."
 
         lines.append(f"**{cand_id}. {title}** ({doc_type})")
-        if preview:
-            lines.append(f"   _{preview}_")
+        # source를 숨겨진 형태로 포함 (다음 요청에서 파싱용)
+        lines.append(f"   _[SOURCE:{source}] {preview}_")
         lines.append("")
 
     lines.append("---")
     lines.append("💡 **원하시는 문서 번호를 입력해주세요** (예: `1`, `2`, `3`)")
 
     return "\n".join(lines)
+
+
+def _extract_clarification_source_from_history(prev_assistant: str, choice_num: int) -> str | None:
+    """이전 assistant 메시지에서 선택한 번호에 해당하는 source 추출"""
+    if not prev_assistant:
+        return None
+
+    # **N. 제목** 패턴 다음 줄의 [SOURCE:...] 찾기
+    pattern = rf'\*\*{choice_num}\.\s+[^*]+\*\*[^\n]*\n\s*_\[SOURCE:([^\]]+)\]'
+    match = re.search(pattern, prev_assistant)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _is_clarification_response(text: str) -> bool:
+    """assistant 메시지가 clarification 응답인지 확인"""
+    return bool(text and "[SOURCE:" in text and "문서 번호를 입력해주세요" in text)
 
 def _attach_trace(resp: dict, trace_id: str) -> dict:
     if isinstance(resp, dict):
@@ -1759,16 +1778,17 @@ async def chat(req: ChatReq):
     # [ADD] Clarification 번호 선택 처리
     clarification_choice_src = None
     is_choice, choice_num = _is_number_choice(orig_user_msg)
-    if is_choice:
-        clarification_choice_src = _get_clarification_choice(trace_id, choice_num)
+    if is_choice and prev_assistant_msg and _is_clarification_response(prev_assistant_msg):
+        # 이전 assistant 메시지가 clarification 응답이면 거기서 source 추출
+        clarification_choice_src = _extract_clarification_source_from_history(prev_assistant_msg, choice_num)
         if clarification_choice_src:
-            _dbg(f"clarification_choice: choice={choice_num} src='{clarification_choice_src}'")
+            _dbg(f"clarification_choice_from_history: choice={choice_num} src='{clarification_choice_src}'")
             # 선택한 source를 file_hint_src로 사용
             file_hint_src = clarification_choice_src
             file_hint = True
             history_src = clarification_choice_src
         else:
-            _dbg(f"clarification_choice: invalid choice={choice_num} (no session found)")
+            _dbg(f"clarification_choice: invalid choice={choice_num} (source not found in history)")
     inferred_src = ""
     if not force_mcp:
         inferred_src = _match_upload_source_by_query(clean_user_msg)
