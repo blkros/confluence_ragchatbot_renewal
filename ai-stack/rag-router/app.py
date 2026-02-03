@@ -695,22 +695,27 @@ def _get_clarification_choice(session_id: str, choice_num: int) -> str | None:
     return None
 
 def _format_clarification_message(candidates: list, message: str) -> str:
-    """후보 목록을 마크다운 형식으로 포맷 (숨겨진 SOURCE 태그 포함)"""
+    """후보 목록을 마크다운 형식으로 포맷 (HTML 주석으로 SOURCE 숨김)"""
     lines = [message, ""]
     for cand in candidates:
         cand_id = cand.get("id", 0)
         title = cand.get("title", "제목 없음")
         doc_type = cand.get("type", "문서")
-        preview = cand.get("preview", "")
         source = cand.get("source", "")
 
-        # 미리보기 텍스트 짧게 자르기
-        if len(preview) > 80:
-            preview = preview[:80] + "..."
+        # 파일명에서 제목 추출 (제목이 없으면)
+        if title == "제목 없음" and source:
+            # /app/uploads/xxx_filename.pdf -> filename.pdf
+            fname = source.split("/")[-1]
+            # UUID 접두사 제거
+            if "_" in fname and len(fname.split("_")[0]) > 30:
+                fname = "_".join(fname.split("_")[1:])
+            if fname:
+                title = fname
 
         lines.append(f"**{cand_id}. {title}** ({doc_type})")
-        # source를 숨겨진 형태로 포함 (다음 요청에서 파싱용)
-        lines.append(f"   _[SOURCE:{source}] {preview}_")
+        # source를 HTML 주석으로 숨김 (다음 요청에서 파싱용)
+        lines.append(f"<!--CLRF:{cand_id}|{source}-->")
         lines.append("")
 
     lines.append("---")
@@ -724,8 +729,8 @@ def _extract_clarification_source_from_history(prev_assistant: str, choice_num: 
     if not prev_assistant:
         return None
 
-    # **N. 제목** 패턴 다음 줄의 [SOURCE:...] 찾기
-    pattern = rf'\*\*{choice_num}\.\s+[^*]+\*\*[^\n]*\n\s*_\[SOURCE:([^\]]+)\]'
+    # HTML 주석에서 CLRF:N|source 패턴 찾기
+    pattern = rf'<!--CLRF:{choice_num}\|([^>]+)-->'
     match = re.search(pattern, prev_assistant)
     if match:
         return match.group(1)
@@ -734,7 +739,7 @@ def _extract_clarification_source_from_history(prev_assistant: str, choice_num: 
 
 def _is_clarification_response(text: str) -> bool:
     """assistant 메시지가 clarification 응답인지 확인"""
-    return bool(text and "[SOURCE:" in text and "문서 번호를 입력해주세요" in text)
+    return bool(text and "<!--CLRF:" in text and "문서 번호를 입력해주세요" in text)
 
 def _attach_trace(resp: dict, trace_id: str) -> dict:
     if isinstance(resp, dict):
