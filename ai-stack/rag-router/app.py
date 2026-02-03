@@ -1906,6 +1906,35 @@ async def chat(req: ChatReq):
                 "choices": [{"index":0,"message":{"role":"assistant","content":content},"finish_reason":"stop"}],
             }, trace_id)
 
+        # [ADD] === Clarification 체크 (QA 전에 먼저 실행) ===
+        if not clarification_choice_src:  # 이미 선택한 경우는 스킵
+            try:
+                clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
+                if spaces_hint:
+                    clarify_payload["spaces"] = spaces_hint
+                _add_trace(clarify_payload, trace_id)
+                clarify_resp = (await client.post(f"{RAG}/query", json=clarify_payload)).json()
+                if clarify_resp.get("clarification_needed"):
+                    candidates = clarify_resp.get("candidates", [])
+                    message = clarify_resp.get("message", "문서를 선택해주세요.")
+                    if candidates:
+                        _save_clarification(trace_id, candidates)
+                        content = _format_clarification_message(candidates, message)
+                        _dbg(f"clarification_early: trace_id={trace_id} candidates={len(candidates)}")
+                        return _attach_trace({
+                            "id": f"cmpl-{uuid.uuid4()}",
+                            "object": "chat.completion",
+                            "created": int(time.time()),
+                            "model": req.model,
+                            "choices": [{
+                                "index": 0,
+                                "message": {"role": "assistant", "content": content},
+                                "finish_reason": "stop"
+                            }],
+                        }, trace_id)
+            except Exception as e:
+                _dbg(f"clarification_early_error: {e}")
+
         # === QA 경로 ===
         qa_json = None; qa_items = []; qa_urls = []
         if file_hint or force_mcp:
