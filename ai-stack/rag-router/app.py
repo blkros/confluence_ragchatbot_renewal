@@ -17,6 +17,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "/model/Qwen2.5-14B-Instruct")
 ROUTER_MODEL_ID = os.getenv("ROUTER_MODEL_ID", "qwen3-30b-a3b-fp8-router")
 TZ = os.getenv("ROUTER_TZ", "Asia/Seoul")
+
+# [ADD] Clarification 상태 저장 (세션별)
+# key: session_id (trace_id 사용), value: {"candidates": [...], "timestamp": float}
+_CLARIFICATION_SESSIONS = {}
+_CLARIFICATION_TIMEOUT = 300  # 5분
 _NUM_ONLY_LINE = re.compile(r'(?m)^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
 _FILE_HINT_RE = re.compile(
     r"(?:file|document|docx|doc|word|pdf|pptx|ppt|xlsx|excel|csv|sheet|slide|"
@@ -652,6 +657,65 @@ def _pick_max_tokens(req_max: Optional[int]) -> int:
 def _dbg(msg: str) -> None:
     if ROUTER_DEBUG:
         print(f"[router] {msg}")
+
+# [ADD] Clarification 헬퍼 함수들
+def _is_number_choice(text: str) -> tuple[bool, int]:
+    """사용자 입력이 숫자 선택(1, 2, 3 등)인지 확인"""
+    text = text.strip()
+    if re.match(r'^\d+$', text):
+        try:
+            num = int(text)
+            if 1 <= num <= 10:  # 1~10번까지 허용
+                return True, num
+        except ValueError:
+            pass
+    return False, 0
+
+def _save_clarification(session_id: str, candidates: list) -> None:
+    """Clarification 후보 목록을 세션에 저장"""
+    _CLARIFICATION_SESSIONS[session_id] = {
+        "candidates": candidates,
+        "timestamp": time.time()
+    }
+    # 오래된 세션 정리 (5분 이상)
+    now = time.time()
+    expired = [k for k, v in _CLARIFICATION_SESSIONS.items()
+               if now - v["timestamp"] > _CLARIFICATION_TIMEOUT]
+    for k in expired:
+        del _CLARIFICATION_SESSIONS[k]
+
+def _get_clarification_choice(session_id: str, choice_num: int) -> str | None:
+    """세션에 저장된 후보 중 choice_num번째의 source 반환"""
+    session = _CLARIFICATION_SESSIONS.get(session_id)
+    if not session:
+        return None
+    candidates = session.get("candidates", [])
+    if 1 <= choice_num <= len(candidates):
+        return candidates[choice_num - 1].get("source")
+    return None
+
+def _format_clarification_message(candidates: list, message: str) -> str:
+    """후보 목록을 마크다운 형식으로 포맷"""
+    lines = [message, ""]
+    for cand in candidates:
+        cand_id = cand.get("id", 0)
+        title = cand.get("title", "제목 없음")
+        doc_type = cand.get("type", "문서")
+        preview = cand.get("preview", "")
+
+        # 미리보기 텍스트 짧게 자르기
+        if len(preview) > 80:
+            preview = preview[:80] + "..."
+
+        lines.append(f"**{cand_id}. {title}** ({doc_type})")
+        if preview:
+            lines.append(f"   _{preview}_")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("💡 **원하시는 문서 번호를 입력해주세요** (예: `1`, `2`, `3`)")
+
+    return "\n".join(lines)
 
 def _attach_trace(resp: dict, trace_id: str) -> dict:
     if isinstance(resp, dict):
@@ -1691,6 +1755,20 @@ async def chat(req: ChatReq):
         _dbg(f"meta_sources: srcs={meta_sources}")
     if file_hint_src:
         _dbg(f"file_hint_src: src='{file_hint_src}'")
+
+    # [ADD] Clarification 번호 선택 처리
+    clarification_choice_src = None
+    is_choice, choice_num = _is_number_choice(orig_user_msg)
+    if is_choice:
+        clarification_choice_src = _get_clarification_choice(trace_id, choice_num)
+        if clarification_choice_src:
+            _dbg(f"clarification_choice: choice={choice_num} src='{clarification_choice_src}'")
+            # 선택한 source를 file_hint_src로 사용
+            file_hint_src = clarification_choice_src
+            file_hint = True
+            history_src = clarification_choice_src
+        else:
+            _dbg(f"clarification_choice: invalid choice={choice_num} (no session found)")
     inferred_src = ""
     if not force_mcp:
         inferred_src = _match_upload_source_by_query(clean_user_msg)
@@ -2059,6 +2137,9 @@ async def chat(req: ChatReq):
                     _apply_src_filters(payload1, file_hint_src, meta_src_set)
                 if spaces_hint:
                     payload1["spaces"] = spaces_hint
+                # [ADD] Clarification choice 전달
+                if clarification_choice_src:
+                    payload1["clarification_choice"] = clarification_choice_src
                 _add_trace(payload1, trace_id)
                 j1 = await _query_with_wait(client, payload1, file_hint)
             except Exception:
@@ -2079,6 +2160,9 @@ async def chat(req: ChatReq):
                     _apply_src_filters(payload2, file_hint_src, meta_src_set)
                 if spaces_hint:
                     payload2["spaces"] = spaces_hint
+                # [ADD] Clarification choice 전달
+                if clarification_choice_src:
+                    payload2["clarification_choice"] = clarification_choice_src
                 _add_trace(payload2, trace_id)
                 j2 = await _query_with_wait(client, payload2, file_hint)
             except Exception:
@@ -2087,6 +2171,26 @@ async def chat(req: ChatReq):
 
             # 여기서 바로 평가/갱신 (바깥에 동일 코드 두지 말기)
             for qj in (j1, j2):
+                # [ADD] Clarification 응답 처리
+                if qj.get("clarification_needed"):
+                    candidates = qj.get("candidates", [])
+                    message = qj.get("message", "문서를 선택해주세요.")
+                    if candidates:
+                        _save_clarification(trace_id, candidates)
+                        content = _format_clarification_message(candidates, message)
+                        _dbg(f"clarification: trace_id={trace_id} candidates={len(candidates)}")
+                        return _attach_trace({
+                            "id": f"cmpl-{uuid.uuid4()}",
+                            "object": "chat.completion",
+                            "created": int(time.time()),
+                            "model": req.model,
+                            "choices": [{
+                                "index": 0,
+                                "message": {"role": "assistant", "content": content},
+                                "finish_reason": "stop"
+                            }],
+                        }, trace_id)
+
                 direct_answer = (qj.get("direct_answer") or "").strip()
                 if direct_answer:
                     if ROUTER_SHOW_CONTEXT_LABEL:
