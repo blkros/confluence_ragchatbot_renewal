@@ -71,6 +71,8 @@ services:
     restart: unless-stopped
     volumes:
       - "${STORAGE_ROOT}/open-webui-data:/data:ro"
+      # Development: mount source code for hot reload
+      - "./ai-stack/rag-router/app.py:/app/app.py:ro"
 
   mcp-confluence:
     container_name: mcp-confluence
