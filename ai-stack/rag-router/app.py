@@ -1784,8 +1784,9 @@ async def chat(req: ChatReq):
     # [ADD] Clarification 번호 선택 처리
     # 사용자가 숫자만 입력하면 이전 질문으로 다시 clarification 요청해서 source 가져옴
     clarification_choice_src = None
-    is_choice, choice_num = _is_number_choice(orig_user_msg)
-    _dbg(f"clrf_check: is_choice={is_choice} num={choice_num} orig='{orig_user_msg[:30]}' prev_user={bool(prev_user_msg)} prev_asst={bool(prev_assistant_msg)}")
+    # clean_user_msg 사용 (orig_user_msg는 Open WebUI가 "### Task:" 등으로 변환함)
+    is_choice, choice_num = _is_number_choice(clean_user_msg)
+    _dbg(f"clrf_check: is_choice={is_choice} num={choice_num} clean='{clean_user_msg}' prev_user={bool(prev_user_msg)} prev_asst={bool(prev_assistant_msg)}")
     if prev_assistant_msg:
         is_clrf = _is_clarification_response(prev_assistant_msg)
         _dbg(f"clrf_check: is_clrf_resp={is_clrf} asst_preview='{prev_assistant_msg[:80]}'")
