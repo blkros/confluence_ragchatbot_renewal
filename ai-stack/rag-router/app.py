@@ -1785,6 +1785,10 @@ async def chat(req: ChatReq):
     # 사용자가 숫자만 입력하면 이전 질문으로 다시 clarification 요청해서 source 가져옴
     clarification_choice_src = None
     is_choice, choice_num = _is_number_choice(orig_user_msg)
+    _dbg(f"clrf_check: is_choice={is_choice} num={choice_num} prev_user={bool(prev_user_msg)} prev_asst={bool(prev_assistant_msg)}")
+    if prev_assistant_msg:
+        is_clrf = _is_clarification_response(prev_assistant_msg)
+        _dbg(f"clrf_check: is_clrf_resp={is_clrf} asst_preview='{prev_assistant_msg[:80]}'")
     if is_choice and prev_user_msg and prev_assistant_msg and _is_clarification_response(prev_assistant_msg):
         _dbg(f"clarification_choice_attempt: choice={choice_num} prev_q='{prev_user_msg[:50]}'")
         # 이전 질문으로 다시 clarification 요청해서 candidates 가져오기
