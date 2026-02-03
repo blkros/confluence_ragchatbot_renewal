@@ -739,7 +739,8 @@ def _extract_clarification_source_from_history(prev_assistant: str, choice_num: 
 
 def _is_clarification_response(text: str) -> bool:
     """assistant 메시지가 clarification 응답인지 확인"""
-    return bool(text and "<!--CLRF:" in text and "문서 번호를 입력해주세요" in text)
+    # "문서 번호를 입력해주세요" 또는 "어떤 것을 원하시나요" 가 있으면 clarification 응답
+    return bool(text and ("문서 번호를 입력해주세요" in text or "어떤 것을 원하시나요" in text))
 
 def _attach_trace(resp: dict, trace_id: str) -> dict:
     if isinstance(resp, dict):
@@ -1781,19 +1782,31 @@ async def chat(req: ChatReq):
         _dbg(f"file_hint_src: src='{file_hint_src}'")
 
     # [ADD] Clarification 번호 선택 처리
+    # 사용자가 숫자만 입력하면 이전 질문으로 다시 clarification 요청해서 source 가져옴
     clarification_choice_src = None
     is_choice, choice_num = _is_number_choice(orig_user_msg)
-    if is_choice and prev_assistant_msg and _is_clarification_response(prev_assistant_msg):
-        # 이전 assistant 메시지가 clarification 응답이면 거기서 source 추출
-        clarification_choice_src = _extract_clarification_source_from_history(prev_assistant_msg, choice_num)
+    if is_choice and prev_user_msg and prev_assistant_msg and _is_clarification_response(prev_assistant_msg):
+        _dbg(f"clarification_choice_attempt: choice={choice_num} prev_q='{prev_user_msg[:50]}'")
+        # 이전 질문으로 다시 clarification 요청해서 candidates 가져오기
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
+                re_payload = {"q": prev_user_msg, "k": 5, "sticky": False}
+                re_resp = (await cl.post(f"{RAG}/query", json=re_payload)).json()
+                if re_resp.get("clarification_needed"):
+                    candidates = re_resp.get("candidates", [])
+                    if 1 <= choice_num <= len(candidates):
+                        clarification_choice_src = candidates[choice_num - 1].get("source")
+                        _dbg(f"clarification_choice_resolved: choice={choice_num} src='{clarification_choice_src}'")
+        except Exception as e:
+            _dbg(f"clarification_choice_error: {e}")
+
         if clarification_choice_src:
-            _dbg(f"clarification_choice_from_history: choice={choice_num} src='{clarification_choice_src}'")
             # 선택한 source를 file_hint_src로 사용
             file_hint_src = clarification_choice_src
             file_hint = True
             history_src = clarification_choice_src
         else:
-            _dbg(f"clarification_choice: invalid choice={choice_num} (source not found in history)")
+            _dbg(f"clarification_choice: invalid choice={choice_num}")
     inferred_src = ""
     if not force_mcp:
         inferred_src = _match_upload_source_by_query(clean_user_msg)
