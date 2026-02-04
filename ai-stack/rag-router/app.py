@@ -1827,18 +1827,25 @@ async def chat(req: ChatReq):
         _dbg(f"clrf_check: is_clrf_resp={is_clrf} asst_preview='{prev_assistant_msg[:80]}'")
     if is_choice and prev_user_msg and prev_assistant_msg and _is_clarification_response(prev_assistant_msg):
         _dbg(f"clarification_choice_attempt: choice={choice_num} prev_q='{prev_user_msg[:50]}'")
-        # 이전 질문으로 다시 clarification 요청해서 candidates 가져오기
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
-                re_payload = {"q": prev_user_msg, "k": 5, "sticky": False}
-                re_resp = (await cl.post(f"{RAG}/query", json=re_payload)).json()
-                if re_resp.get("clarification_needed"):
-                    candidates = re_resp.get("candidates", [])
-                    if 1 <= choice_num <= len(candidates):
-                        clarification_choice_src = candidates[choice_num - 1].get("source")
-                        _dbg(f"clarification_choice_resolved: choice={choice_num} src='{clarification_choice_src}'")
-        except Exception as e:
-            _dbg(f"clarification_choice_error: {e}")
+        # 1) 먼저 HTML 주석에서 직접 source 추출 시도 (빠름)
+        clarification_choice_src = _extract_clarification_source_from_history(prev_assistant_msg, choice_num)
+        if clarification_choice_src:
+            _dbg(f"clarification_choice_from_html: choice={choice_num} src='{clarification_choice_src}'")
+        else:
+            # 2) HTML 주석 추출 실패시 re-query 시도 (fallback)
+            _dbg(f"clarification_html_miss: choice={choice_num}, trying re-query")
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
+                    re_payload = {"q": prev_user_msg, "k": 5, "sticky": False}
+                    re_resp = (await cl.post(f"{RAG}/query", json=re_payload)).json()
+                    _dbg(f"clarification_requery: clarification_needed={re_resp.get('clarification_needed')} candidates={len(re_resp.get('candidates', []))}")
+                    if re_resp.get("clarification_needed"):
+                        candidates = re_resp.get("candidates", [])
+                        if 1 <= choice_num <= len(candidates):
+                            clarification_choice_src = candidates[choice_num - 1].get("source")
+                            _dbg(f"clarification_choice_resolved: choice={choice_num} src='{clarification_choice_src}'")
+            except Exception as e:
+                _dbg(f"clarification_choice_error: {type(e).__name__}: {e}")
 
         if clarification_choice_src:
             # 선택한 source를 file_hint_src로 사용
