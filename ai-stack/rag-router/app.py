@@ -1812,6 +1812,34 @@ async def chat(req: ChatReq):
             history_src = clarification_choice_src
         else:
             _dbg(f"clarification_choice: invalid choice={choice_num}")
+    # [ADD] === Clarification 체크 (inferred_src 전에 먼저 실행) ===
+    # clarification_choice가 없고, 메타태스크가 아니면 clarification 체크
+    if not clarification_choice_src and not _is_webui_task(orig_user_msg):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
+                clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
+                _add_trace(clarify_payload, trace_id)
+                clarify_resp = (await cl.post(f"{RAG}/query", json=clarify_payload)).json()
+                if clarify_resp.get("clarification_needed"):
+                    candidates = clarify_resp.get("candidates", [])
+                    message = clarify_resp.get("message", "문서를 선택해주세요.")
+                    if candidates:
+                        content = _format_clarification_message(candidates, message)
+                        _dbg(f"clarification_early: trace_id={trace_id} candidates={len(candidates)}")
+                        return _attach_trace({
+                            "id": f"cmpl-{uuid.uuid4()}",
+                            "object": "chat.completion",
+                            "created": int(time.time()),
+                            "model": req.model,
+                            "choices": [{
+                                "index": 0,
+                                "message": {"role": "assistant", "content": content},
+                                "finish_reason": "stop"
+                            }],
+                        }, trace_id)
+        except Exception as e:
+            _dbg(f"clarification_early_error: {e}")
+
     inferred_src = ""
     if not force_mcp:
         inferred_src = _match_upload_source_by_query(clean_user_msg)
