@@ -714,8 +714,8 @@ def _format_clarification_message(candidates: list, message: str) -> str:
                 title = fname
 
         lines.append(f"**{cand_id}. {title}** ({doc_type})")
-        # source를 HTML 주석으로 숨김 (다음 요청에서 파싱용)
-        lines.append(f"<!--CLRF:{cand_id}|{source}-->")
+        # source를 숨김 span으로 저장 (다음 요청에서 파싱용)
+        lines.append(f'<span style="display:none">CLRF:{cand_id}|{source}</span>')
         lines.append("")
 
     lines.append("---")
@@ -729,11 +729,19 @@ def _extract_clarification_source_from_history(prev_assistant: str, choice_num: 
     if not prev_assistant:
         return None
 
-    # HTML 주석에서 CLRF:N|source 패턴 찾기
-    pattern = rf'<!--CLRF:{choice_num}\|([^>]+)-->'
+    # 숨김 span에서 CLRF:N|source 패턴 찾기
+    # 형식: <span style="display:none">CLRF:N|source</span>
+    pattern = rf'<span[^>]*>CLRF:{choice_num}\|([^<]+)</span>'
     match = re.search(pattern, prev_assistant)
     if match:
         return match.group(1)
+
+    # fallback: 기존 HTML 주석 형식도 지원
+    pattern_legacy = rf'<!--CLRF:{choice_num}\|([^>]+)-->'
+    match_legacy = re.search(pattern_legacy, prev_assistant)
+    if match_legacy:
+        return match_legacy.group(1)
+
     return None
 
 
