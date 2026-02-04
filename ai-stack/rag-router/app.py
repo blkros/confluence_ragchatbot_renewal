@@ -2028,7 +2028,7 @@ async def chat(req: ChatReq):
             }, trace_id)
 
         # [ADD] === Clarification 체크 (QA 전에 먼저 실행) ===
-        if not clarification_choice_src:  # 이미 선택한 경우는 스킵
+        if not clarification_choice_src and not file_hint and not file_hint_src:  # 파일 힌트가 있으면 스킵
             try:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
                 if spaces_hint:
