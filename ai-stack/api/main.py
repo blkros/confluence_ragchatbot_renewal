@@ -2121,8 +2121,13 @@ def _detect_ambiguity(q: str, items: list, contexts: list) -> bool:
     q_lower = q.lower()
     has_vague = any(kw in q_lower for kw in vague_keywords)
 
-    # 모호함 판정: score가 낮고, 여러 source에서 나오고, 모호한 키워드 포함
-    is_ambiguous = (top1_score < 0.6) and (len(sources) >= 2) and has_vague
+    # 4) Acronym check (OCPP, API 같은 약어가 있으면 특정 문서를 찾는 것)
+    has_acronym = bool(re.search(r'\b[A-Z]{2,10}\b', q))
+
+    # 모호함 판정:
+    # - (약어 + 모호한 키워드) 조합이면 clarification 필요
+    # - 또는 (낮은 score + 여러 source + 모호한 키워드)
+    is_ambiguous = (has_acronym and has_vague) or ((top1_score < 0.6) and (len(sources) >= 2) and has_vague)
 
     return is_ambiguous
 
