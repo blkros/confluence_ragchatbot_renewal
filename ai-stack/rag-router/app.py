@@ -1717,6 +1717,41 @@ async def chat(req: ChatReq):
     trace_id = str(uuid.uuid4())
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
     clean_user_msg = normalize_query_router(orig_user_msg)
+
+    # [ADD] === 맨 앞에서 Clarification 체크 (모든 로직 전에) ===
+    # 메타태스크가 아니고, 모호한 키워드가 있으면 clarification 체크
+    _vague_kw = ["요약", "내용", "정리", "설명", "알려"]
+    if not _is_webui_task(orig_user_msg) and any(kw in clean_user_msg for kw in _vague_kw):
+        # 이전 assistant 메시지가 clarification 응답이고 숫자 선택인지 체크
+        raw_msgs = [m.dict() if hasattr(m, "dict") else m for m in req.messages]
+        prev_asst = _last_assistant_text(raw_msgs[:-1])
+        is_choice, choice_num = _is_number_choice(clean_user_msg)
+
+        if not is_choice:  # 숫자 선택이 아니면 clarification 체크
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
+                    clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
+                    clarify_resp = (await cl.post(f"{RAG}/query", json=clarify_payload)).json()
+                    if clarify_resp.get("clarification_needed"):
+                        candidates = clarify_resp.get("candidates", [])
+                        message = clarify_resp.get("message", "문서를 선택해주세요.")
+                        if candidates:
+                            content = _format_clarification_message(candidates, message)
+                            _dbg(f"clarification_top: trace_id={trace_id} q='{clean_user_msg}' candidates={len(candidates)}")
+                            return _attach_trace({
+                                "id": f"cmpl-{uuid.uuid4()}",
+                                "object": "chat.completion",
+                                "created": int(time.time()),
+                                "model": req.model,
+                                "choices": [{
+                                    "index": 0,
+                                    "message": {"role": "assistant", "content": content},
+                                    "finish_reason": "stop"
+                                }],
+                            }, trace_id)
+            except Exception as e:
+                _dbg(f"clarification_top_error: {e}")
+
     page_id = _extract_page_id(orig_user_msg) or _extract_page_id(clean_user_msg)
     confluence_hint = bool(
         _CONF_HOST_RE.search(orig_user_msg or "")
