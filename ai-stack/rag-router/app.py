@@ -1863,8 +1863,8 @@ async def chat(req: ChatReq):
         else:
             _dbg(f"clarification_choice: invalid choice={choice_num}")
     # [ADD] === Clarification 체크 (inferred_src 전에 먼저 실행) ===
-    # clarification_choice가 없고, 메타태스크가 아니면 clarification 체크
-    if not clarification_choice_src and not _is_webui_task(orig_user_msg):
+    # clarification_choice가 없고, 메타태스크가 아니고, 파일 첨부 힌트가 없으면 clarification 체크
+    if not clarification_choice_src and not _is_webui_task(orig_user_msg) and not file_hint and not file_hint_src:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
