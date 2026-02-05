@@ -1863,8 +1863,10 @@ async def chat(req: ChatReq):
         else:
             _dbg(f"clarification_choice: invalid choice={choice_num}")
     # [ADD] === Clarification 체크 (inferred_src 전에 먼저 실행) ===
-    # clarification_choice가 없고, 메타태스크가 아니고, 파일 첨부 힌트가 없으면 clarification 체크
-    if not clarification_choice_src and not _is_webui_task(orig_user_msg) and not file_hint and not file_hint_src:
+    # clarification_choice가 없고, 메타태스크가 아니고, 명시적 파일 첨부가 아니면 clarification 체크
+    # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵
+    has_explicit_upload = bool(re.search(r'첨부|업로드|올린|attach|upload', clean_user_msg, re.IGNORECASE))
+    if not clarification_choice_src and not _is_webui_task(orig_user_msg) and not has_explicit_upload:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
@@ -2028,7 +2030,9 @@ async def chat(req: ChatReq):
             }, trace_id)
 
         # [ADD] === Clarification 체크 (QA 전에 먼저 실행) ===
-        if not clarification_choice_src and not file_hint and not file_hint_src:  # 파일 힌트가 있으면 스킵
+        # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵
+        has_explicit_upload_2 = bool(re.search(r'첨부|업로드|올린|attach|upload', clean_user_msg, re.IGNORECASE))
+        if not clarification_choice_src and not has_explicit_upload_2:
             try:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
                 if spaces_hint:
