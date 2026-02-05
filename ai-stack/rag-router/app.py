@@ -1925,6 +1925,10 @@ async def chat(req: ChatReq):
                 % (history_src, prev_user_msg[:80], clean_user_msg[:80])
             )
             history_src = ""
+    # "첨부"가 명시되고 새 파일이 있으면 history_src를 새 파일로 덮어쓰기
+    if has_explicit_upload and file_hint_src and history_src != file_hint_src:
+        _dbg(f"history_source_override: old='{history_src}' new='{file_hint_src}' reason=explicit_upload")
+        history_src = file_hint_src
     if history_src:
         _dbg(f"history_source: src='{history_src}'")
     _dbg(f"req: trace_id={trace_id} user_len={len(orig_user_msg)} file_hint={file_hint} stream={bool(req.stream)} max_tokens={req.max_tokens}")
