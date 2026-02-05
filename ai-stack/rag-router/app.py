@@ -1893,7 +1893,9 @@ async def chat(req: ChatReq):
             _dbg(f"clarification_early_error: {e}")
 
     inferred_src = ""
-    if not force_mcp:
+    # "첨부"가 명시되어 있고 file_hint_src가 이미 있으면 forced_infer 스킵
+    skip_forced_infer = has_explicit_upload and file_hint_src
+    if not force_mcp and not skip_forced_infer:
         inferred_src = _match_upload_source_by_query(clean_user_msg)
         if inferred_src and inferred_src != file_hint_src and _source_query_overlap(inferred_src, clean_user_msg):
             file_hint = True
@@ -1901,6 +1903,8 @@ async def chat(req: ChatReq):
             if history_src != inferred_src:
                 history_src = inferred_src
             _dbg(f"forced_infer_src: src='{inferred_src}' reason=query_match")
+    elif skip_forced_infer:
+        _dbg(f"forced_infer_skip: explicit_upload with file_hint_src='{file_hint_src}'")
     if history_src and not force_mcp and not _source_query_overlap(history_src, clean_user_msg):
         topic_shift = True
     if history_src and not force_mcp and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
