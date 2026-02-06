@@ -90,6 +90,8 @@ export const sanitizeResponseContent = (content: string) => {
 };
 
 export const processResponseContent = (content: string) => {
+	// [ADD] CLRF_DATA 태그 제거 (clarification 선택용 숨김 데이터)
+	content = content.replace(/<!--CLRF_DATA:\{[^}]*\}-->/g, '');
 	content = processChineseContent(content);
 	return content.trim();
 };
