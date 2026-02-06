@@ -695,8 +695,10 @@ def _get_clarification_choice(session_id: str, choice_num: int) -> str | None:
     return None
 
 def _format_clarification_message(candidates: list, message: str) -> str:
-    """후보 목록을 마크다운 형식으로 포맷 (HTML 주석으로 SOURCE 숨김)"""
+    """후보 목록을 마크다운 형식으로 포맷 (CLRF 데이터는 맨 끝에 HTML 주석으로 숨김)"""
     lines = [message, ""]
+    clrf_data = {}  # CLRF 데이터를 모아서 맨 끝에 추가
+
     for cand in candidates:
         cand_id = cand.get("id", 0)
         title = cand.get("title", "제목 없음")
@@ -714,12 +716,16 @@ def _format_clarification_message(candidates: list, message: str) -> str:
                 title = fname
 
         lines.append(f"**{cand_id}. {title}** ({doc_type})")
-        # source를 숨김 span으로 저장 (다음 요청에서 파싱용)
-        lines.append(f'<span style="display:none">CLRF:{cand_id}|{source}</span>')
         lines.append("")
+        # CLRF 데이터 수집
+        clrf_data[cand_id] = source
 
     lines.append("---")
     lines.append("💡 **원하시는 문서 번호를 입력해주세요** (예: `1`, `2`, `3`)")
+
+    # CLRF 데이터를 맨 끝에 JSON 형태로 숨김 (HTML 주석 - Open WebUI에서도 보이지 않음)
+    import json
+    lines.append(f"\n<!--CLRF_DATA:{json.dumps(clrf_data)}-->")
 
     return "\n".join(lines)
 
@@ -729,14 +735,28 @@ def _extract_clarification_source_from_history(prev_assistant: str, choice_num: 
     if not prev_assistant:
         return None
 
-    # 숨김 span에서 CLRF:N|source 패턴 찾기
+    # 새 형식: <!--CLRF_DATA:{"1": "/path", "2": "/path"}-->
+    json_pattern = r'<!--CLRF_DATA:(\{[^}]+\})-->'
+    json_match = re.search(json_pattern, prev_assistant)
+    if json_match:
+        try:
+            import json
+            clrf_data = json.loads(json_match.group(1))
+            # choice_num을 문자열 키로 변환해서 찾기
+            source = clrf_data.get(str(choice_num)) or clrf_data.get(choice_num)
+            if source:
+                return source
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # fallback: 숨김 span 형식
     # 형식: <span style="display:none">CLRF:N|source</span>
     pattern = rf'<span[^>]*>CLRF:{choice_num}\|([^<]+)</span>'
     match = re.search(pattern, prev_assistant)
     if match:
         return match.group(1)
 
-    # fallback: 기존 HTML 주석 형식도 지원
+    # fallback: 기존 HTML 주석 형식
     pattern_legacy = rf'<!--CLRF:{choice_num}\|([^>]+)-->'
     match_legacy = re.search(pattern_legacy, prev_assistant)
     if match_legacy:
@@ -747,8 +767,13 @@ def _extract_clarification_source_from_history(prev_assistant: str, choice_num: 
 
 def _is_clarification_response(text: str) -> bool:
     """assistant 메시지가 clarification 응답인지 확인"""
-    # "문서 번호를 입력해주세요" 또는 "어떤 것을 원하시나요" 가 있으면 clarification 응답
-    return bool(text and ("문서 번호를 입력해주세요" in text or "어떤 것을 원하시나요" in text))
+    if not text:
+        return False
+    # [FIX] CLRF_DATA 주석이 있으면 clarification 응답 (가장 확실한 지표)
+    if "<!--CLRF_DATA:" in text:
+        return True
+    # 레거시: "문서 번호를 입력해주세요" 또는 "어떤 것을 원하시나요" 가 있으면 clarification 응답
+    return "문서 번호를 입력해주세요" in text or "어떤 것을 원하시나요" in text
 
 def _attach_trace(resp: dict, trace_id: str) -> dict:
     if isinstance(resp, dict):
@@ -1632,9 +1657,24 @@ def _prefer_single_source(items: list[dict], query: str = "") -> tuple[list[dict
     filtered = [it for it in items or [] if _get_item_source(it) == primary]
     return filtered, primary
 
-def _label_for_context(items: list[dict] | None, urls: list[str] | None) -> str:
+def _label_for_context(
+    items: list[dict] | None,
+    urls: list[str] | None,
+    query: str | None = None,
+    ctx_text: str | None = None,
+) -> str:
+    """
+    컨텍스트 소스 레이블 결정.
+    query와 ctx_text가 주어지면 관련성 체크 후, 관련 없으면 "없음(LLM)" 반환.
+    """
     if not items and not urls:
         return "없음(LLM)"
+    # 관련성 체크: 질문과 컨텍스트 간 overlap이 너무 낮으면 LLM 응답으로 간주
+    if query and ctx_text:
+        rel = relevance_ratio(query, ctx_text, ctx_limit=MAX_CTX_CHARS)
+        if rel < REL_THRESH:
+            _dbg(f"label_context_no_rel: query='{query[:50]}' rel={rel:.3f} thresh={REL_THRESH}")
+            return "없음(LLM)"
     if _items_have_local_source(items):
         return "로컬 문서(RAG)"
     for u in urls or []:
@@ -1725,6 +1765,8 @@ async def chat(req: ChatReq):
     trace_id = str(uuid.uuid4())
     orig_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "").strip()
     clean_user_msg = normalize_query_router(orig_user_msg)
+    # [ADD] 파일 업로드 힌트 체크 (한 번만 정의, 전역 사용)
+    has_explicit_upload = bool(re.search(r'첨부|업로드|올린|attach|upload', clean_user_msg, re.IGNORECASE))
 
     # [ADD] === 맨 앞에서 Clarification 체크 (모든 로직 전에) ===
     # 메타태스크가 아니고, 모호한 키워드가 있으면 clarification 체크
@@ -1735,9 +1777,8 @@ async def chat(req: ChatReq):
         prev_asst = _last_assistant_text(raw_msgs[:-1])
         is_choice, choice_num = _is_number_choice(clean_user_msg)
 
-        # "첨부" 등이 있으면 파일 업로드 → clarification 스킵
-        has_upload_hint = bool(re.search(r'첨부|업로드|올린|attach|upload', clean_user_msg, re.IGNORECASE))
-        if not is_choice and not has_upload_hint:  # 숫자 선택이 아니고 파일 업로드 힌트가 없으면 clarification 체크
+        # "첨부" 등이 있으면 파일 업로드 → clarification 스킵 (has_explicit_upload는 상단에서 정의됨)
+        if not is_choice and not has_explicit_upload:  # 숫자 선택이 아니고 파일 업로드 힌트가 없으면 clarification 체크
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
                     clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
@@ -1866,8 +1907,7 @@ async def chat(req: ChatReq):
             _dbg(f"clarification_choice: invalid choice={choice_num}")
     # [ADD] === Clarification 체크 (inferred_src 전에 먼저 실행) ===
     # clarification_choice가 없고, 메타태스크가 아니고, 명시적 파일 첨부가 아니면 clarification 체크
-    # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵
-    has_explicit_upload = bool(re.search(r'첨부|업로드|올린|attach|upload', clean_user_msg, re.IGNORECASE))
+    # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵 (has_explicit_upload는 상단에서 정의됨)
     if not clarification_choice_src and not _is_webui_task(orig_user_msg) and not has_explicit_upload:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
@@ -1878,6 +1918,7 @@ async def chat(req: ChatReq):
                     candidates = clarify_resp.get("candidates", [])
                     message = clarify_resp.get("message", "문서를 선택해주세요.")
                     if candidates:
+                        _save_clarification(trace_id, candidates)  # [FIX] 세션에 저장 추가
                         content = _format_clarification_message(candidates, message)
                         _dbg(f"clarification_early: trace_id={trace_id} candidates={len(candidates)}")
                         return _attach_trace({
@@ -1909,7 +1950,8 @@ async def chat(req: ChatReq):
         _dbg(f"forced_infer_skip: explicit_upload with file_hint_src='{file_hint_src}'")
     if history_src and not force_mcp and not _source_query_overlap(history_src, clean_user_msg):
         topic_shift = True
-    if history_src and not force_mcp and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg):
+    # [FIX] 명시적 파일 첨부가 있으면 topic shift로 인한 history_src 리셋 스킵
+    if history_src and not force_mcp and prev_user_msg and _is_topic_shift(prev_user_msg, clean_user_msg) and not has_explicit_upload:
         if _is_explicit_reset(clean_user_msg):
             _dbg(
                 "history_source_reset: src='%s' prev='%s' curr='%s' reason=explicit_reset"
@@ -2040,9 +2082,8 @@ async def chat(req: ChatReq):
             }, trace_id)
 
         # [ADD] === Clarification 체크 (QA 전에 먼저 실행) ===
-        # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵
-        has_explicit_upload_2 = bool(re.search(r'첨부|업로드|올린|attach|upload', clean_user_msg, re.IGNORECASE))
-        if not clarification_choice_src and not has_explicit_upload_2:
+        # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵 (has_explicit_upload는 상단에서 정의됨)
+        if not clarification_choice_src and not has_explicit_upload:
             try:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
                 if spaces_hint:
@@ -2267,7 +2308,7 @@ async def chat(req: ChatReq):
                 content += "\n\n출처:\n" + "\n".join(f"- {u}" for u in urls)
 
         if ROUTER_SHOW_CONTEXT_LABEL:
-            content = f"근거: {_label_for_context(ctx_items or qa_items, qa_urls)}\n{content}"
+            content = f"근거: {_label_for_context(ctx_items or qa_items, qa_urls, query=clean_user_msg, ctx_text=full_ctx_for_check)}\n{content}"
 
         return _attach_trace({
             "id": f"cmpl-{uuid.uuid4()}",
@@ -2334,11 +2375,10 @@ async def chat(req: ChatReq):
 
 
             # 여기서 바로 평가/갱신 (바깥에 동일 코드 두지 말기)
-            # "첨부" 등이 있으면 clarification 스킵
-            has_upload_hint_4 = bool(re.search(r'첨부|업로드|올린|attach|upload', clean_user_msg, re.IGNORECASE))
+            # "첨부" 등이 있으면 clarification 스킵 (has_explicit_upload는 상단에서 정의됨)
             for qj in (j1, j2):
                 # [ADD] Clarification 응답 처리 (파일 업로드 힌트가 있으면 스킵)
-                if qj.get("clarification_needed") and not has_upload_hint_4:
+                if qj.get("clarification_needed") and not has_explicit_upload:
                     candidates = qj.get("candidates", [])
                     message = qj.get("message", "문서를 선택해주세요.")
                     if candidates:
@@ -2719,7 +2759,7 @@ async def chat(req: ChatReq):
             content += "\n\n출처:\n" + "\n".join(f"- {u}" for u in urls)
 
     if ROUTER_SHOW_CONTEXT_LABEL:
-        content = f"근거: {_label_for_context(ctx_items or qa_items, src_urls)}\n{content}"
+        content = f"근거: {_label_for_context(ctx_items or qa_items, src_urls, query=clean_user_msg, ctx_text=full_ctx_for_check)}\n{content}"
 
     return _attach_trace({
         "id": f"cmpl-{uuid.uuid4()}",
