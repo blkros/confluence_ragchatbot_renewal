@@ -723,9 +723,9 @@ def _format_clarification_message(candidates: list, message: str) -> str:
     lines.append("---")
     lines.append("💡 **원하시는 문서 번호를 입력해주세요** (예: `1`, `2`, `3`)")
 
-    # CLRF 데이터를 맨 끝에 JSON 형태로 숨김 (HTML 주석)
+    # CLRF 데이터를 맨 끝에 마크다운 주석 형식으로 숨김 (대부분의 렌더러에서 안 보임)
     import json
-    lines.append(f"\n<!--CLRF_DATA:{json.dumps(clrf_data)}-->")
+    lines.append(f"\n[//]: # (CLRF:{json.dumps(clrf_data)})")
 
     return "\n".join(lines)
 
@@ -735,28 +735,39 @@ def _extract_clarification_source_from_history(prev_assistant: str, choice_num: 
     if not prev_assistant:
         return None
 
-    # 새 형식: <!--CLRF_DATA:{"1": "/path", "2": "/path"}-->
-    json_pattern = r'<!--CLRF_DATA:(\{[^}]+\})-->'
-    json_match = re.search(json_pattern, prev_assistant)
-    if json_match:
+    # 1) 마크다운 주석 형식: [//]: # (CLRF:{"1": "/path", "2": "/path"})
+    md_pattern = r'\[//\]: # \(CLRF:(\{[^)]+\})\)'
+    md_match = re.search(md_pattern, prev_assistant)
+    if md_match:
         try:
             import json
-            clrf_data = json.loads(json_match.group(1))
-            # choice_num을 문자열 키로 변환해서 찾기
+            clrf_data = json.loads(md_match.group(1))
             source = clrf_data.get(str(choice_num)) or clrf_data.get(choice_num)
             if source:
                 return source
         except (json.JSONDecodeError, KeyError):
             pass
 
-    # fallback: 숨김 span 형식
-    # 형식: <span style="display:none">CLRF:N|source</span>
+    # 2) HTML 주석 형식: <!--CLRF_DATA:{"1": "/path", "2": "/path"}-->
+    json_pattern = r'<!--CLRF_DATA:(\{[^}]+\})-->'
+    json_match = re.search(json_pattern, prev_assistant)
+    if json_match:
+        try:
+            import json
+            clrf_data = json.loads(json_match.group(1))
+            source = clrf_data.get(str(choice_num)) or clrf_data.get(choice_num)
+            if source:
+                return source
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # 3) fallback: 숨김 span 형식
     pattern = rf'<span[^>]*>CLRF:{choice_num}\|([^<]+)</span>'
     match = re.search(pattern, prev_assistant)
     if match:
         return match.group(1)
 
-    # fallback: 기존 HTML 주석 형식
+    # 4) fallback: 기존 HTML 주석 형식
     pattern_legacy = rf'<!--CLRF:{choice_num}\|([^>]+)-->'
     match_legacy = re.search(pattern_legacy, prev_assistant)
     if match_legacy:
@@ -769,7 +780,10 @@ def _is_clarification_response(text: str) -> bool:
     """assistant 메시지가 clarification 응답인지 확인"""
     if not text:
         return False
-    # CLRF_DATA 주석이 있으면 clarification 응답 (가장 확실한 지표)
+    # 마크다운 주석 형식: [//]: # (CLRF:...)
+    if "[//]: # (CLRF:" in text:
+        return True
+    # HTML 주석 형식: <!--CLRF_DATA:...-->
     if "<!--CLRF_DATA:" in text:
         return True
     # "문서 번호를 입력해주세요" 또는 "어떤 것을 원하시나요" 가 있으면 clarification 응답
