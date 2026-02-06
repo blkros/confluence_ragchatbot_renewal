@@ -2334,9 +2334,11 @@ async def chat(req: ChatReq):
 
 
             # 여기서 바로 평가/갱신 (바깥에 동일 코드 두지 말기)
+            # "첨부" 등이 있으면 clarification 스킵
+            has_upload_hint_4 = bool(re.search(r'첨부|업로드|올린|attach|upload', clean_user_msg, re.IGNORECASE))
             for qj in (j1, j2):
-                # [ADD] Clarification 응답 처리
-                if qj.get("clarification_needed"):
+                # [ADD] Clarification 응답 처리 (파일 업로드 힌트가 있으면 스킵)
+                if qj.get("clarification_needed") and not has_upload_hint_4:
                     candidates = qj.get("candidates", [])
                     message = qj.get("message", "문서를 선택해주세요.")
                     if candidates:
