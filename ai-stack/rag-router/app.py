@@ -695,9 +695,8 @@ def _get_clarification_choice(session_id: str, choice_num: int) -> str | None:
     return None
 
 def _format_clarification_message(candidates: list, message: str) -> str:
-    """후보 목록을 마크다운 형식으로 포맷 (CLRF 데이터는 맨 끝에 HTML 주석으로 숨김)"""
+    """후보 목록을 마크다운 형식으로 포맷 (CLRF 데이터 임베딩 제거 - re-query 방식 사용)"""
     lines = [message, ""]
-    clrf_data = {}  # CLRF 데이터를 모아서 맨 끝에 추가
 
     for cand in candidates:
         cand_id = cand.get("id", 0)
@@ -717,16 +716,11 @@ def _format_clarification_message(candidates: list, message: str) -> str:
 
         lines.append(f"**{cand_id}. {title}** ({doc_type})")
         lines.append("")
-        # CLRF 데이터 수집
-        clrf_data[cand_id] = source
 
     lines.append("---")
     lines.append("💡 **원하시는 문서 번호를 입력해주세요** (예: `1`, `2`, `3`)")
 
-    # CLRF 데이터를 맨 끝에 JSON 형태로 숨김 (HTML 주석 - Open WebUI에서도 보이지 않음)
-    import json
-    lines.append(f"\n<!--CLRF_DATA:{json.dumps(clrf_data)}-->")
-
+    # CLRF 데이터는 임베딩하지 않음 - 선택 시 re-query로 candidates 다시 가져옴
     return "\n".join(lines)
 
 
@@ -769,10 +763,7 @@ def _is_clarification_response(text: str) -> bool:
     """assistant 메시지가 clarification 응답인지 확인"""
     if not text:
         return False
-    # [FIX] CLRF_DATA 주석이 있으면 clarification 응답 (가장 확실한 지표)
-    if "<!--CLRF_DATA:" in text:
-        return True
-    # 레거시: "문서 번호를 입력해주세요" 또는 "어떤 것을 원하시나요" 가 있으면 clarification 응답
+    # "문서 번호를 입력해주세요" 또는 "어떤 것을 원하시나요" 가 있으면 clarification 응답
     return "문서 번호를 입력해주세요" in text or "어떤 것을 원하시나요" in text
 
 def _attach_trace(resp: dict, trace_id: str) -> dict:
@@ -1878,25 +1869,19 @@ async def chat(req: ChatReq):
         _dbg(f"clrf_check: is_clrf_resp={is_clrf} asst_preview='{prev_assistant_msg[:80]}'")
     if is_choice and prev_user_msg and prev_assistant_msg and _is_clarification_response(prev_assistant_msg):
         _dbg(f"clarification_choice_attempt: choice={choice_num} prev_q='{prev_user_msg[:50]}'")
-        # 1) 먼저 HTML 주석에서 직접 source 추출 시도 (빠름)
-        clarification_choice_src = _extract_clarification_source_from_history(prev_assistant_msg, choice_num)
-        if clarification_choice_src:
-            _dbg(f"clarification_choice_from_html: choice={choice_num} src='{clarification_choice_src}'")
-        else:
-            # 2) HTML 주석 추출 실패시 re-query 시도 (fallback)
-            _dbg(f"clarification_html_miss: choice={choice_num}, trying re-query")
-            try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
-                    re_payload = {"q": prev_user_msg, "k": 5, "sticky": False}
-                    re_resp = (await cl.post(f"{RAG}/query", json=re_payload)).json()
-                    _dbg(f"clarification_requery: clarification_needed={re_resp.get('clarification_needed')} candidates={len(re_resp.get('candidates', []))}")
-                    if re_resp.get("clarification_needed"):
-                        candidates = re_resp.get("candidates", [])
-                        if 1 <= choice_num <= len(candidates):
-                            clarification_choice_src = candidates[choice_num - 1].get("source")
-                            _dbg(f"clarification_choice_resolved: choice={choice_num} src='{clarification_choice_src}'")
-            except Exception as e:
-                _dbg(f"clarification_choice_error: {type(e).__name__}: {e}")
+        # re-query로 candidates 다시 가져와서 선택 (CLRF_DATA 임베딩 제거됨)
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
+                re_payload = {"q": prev_user_msg, "k": 5, "sticky": False}
+                re_resp = (await cl.post(f"{RAG}/query", json=re_payload)).json()
+                _dbg(f"clarification_requery: clarification_needed={re_resp.get('clarification_needed')} candidates={len(re_resp.get('candidates', []))}")
+                if re_resp.get("clarification_needed"):
+                    candidates = re_resp.get("candidates", [])
+                    if 1 <= choice_num <= len(candidates):
+                        clarification_choice_src = candidates[choice_num - 1].get("source")
+                        _dbg(f"clarification_choice_resolved: choice={choice_num} src='{clarification_choice_src}'")
+        except Exception as e:
+            _dbg(f"clarification_choice_error: {type(e).__name__}: {e}")
 
         if clarification_choice_src:
             # 선택한 source를 file_hint_src로 사용
