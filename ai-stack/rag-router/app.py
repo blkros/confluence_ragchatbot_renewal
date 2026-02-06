@@ -1735,7 +1735,9 @@ async def chat(req: ChatReq):
         prev_asst = _last_assistant_text(raw_msgs[:-1])
         is_choice, choice_num = _is_number_choice(clean_user_msg)
 
-        if not is_choice:  # 숫자 선택이 아니면 clarification 체크
+        # "첨부" 등이 있으면 파일 업로드 → clarification 스킵
+        has_upload_hint = bool(re.search(r'첨부|업로드|올린|attach|upload', clean_user_msg, re.IGNORECASE))
+        if not is_choice and not has_upload_hint:  # 숫자 선택이 아니고 파일 업로드 힌트가 없으면 clarification 체크
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
                     clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
