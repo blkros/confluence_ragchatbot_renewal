@@ -183,6 +183,7 @@ DOMAIN_PURITY_THRESHOLD = float(os.getenv("DOMAIN_PURITY_THRESHOLD", "0.6"))
 DOMAIN_MIN_STRONG_TOKENS = int(os.getenv("DOMAIN_MIN_STRONG_TOKENS", "1"))
 SPACE_SCORE_MIN = int(os.getenv("SPACE_SCORE_MIN", "2"))
 MCP_FALLBACK_ON_EMPTY = (os.getenv("MCP_FALLBACK_ON_EMPTY", "1").lower() not in ("0","false","no"))
+MCP_ALWAYS = (os.getenv("MCP_ALWAYS", "0").lower() not in ("0","false","no"))  # Always search Confluence
 RAG_SCORE_GATES = (os.getenv("RAG_SCORE_GATES", "0").lower() not in ("0","false","no"))
 RAG_TOP1_MIN = float(os.getenv("RAG_TOP1_MIN", "0.45"))
 RAG_TOP_GAP_MIN = float(os.getenv("RAG_TOP_GAP_MIN", "0.05"))
@@ -487,12 +488,20 @@ def _should_use_mcp(
 ) -> bool:
     """
     MCP 호출 게이트를 '동적 도메인 판별'로 단순화:
+    - MCP_ALWAYS가 True면 항상 True (로컬 파일 명시적 필터 제외)
     - 명시 space/클라이언트 spaces가 있으면 True
+    - 점수/커버리지가 낮으면 True (관련성 부족)
     - 아니면 _domainish_dynamic(q) 결과만 사용
     """
+    if MCP_ALWAYS:
+        return True
     if space or (client_spaces and len(client_spaces) > 0):
         return True
     if MCP_FALLBACK_ON_EMPTY and local_ok is False:
+        return True
+    # 점수 기반 폴백: 로컬 결과 품질이 낮으면 Confluence 검색
+    score_reasons = {"low_score", "low_gap", "low_coverage", "no_items", "small_pool"}
+    if reasons and any(r in score_reasons for r in reasons):
         return True
     return _domainish_dynamic(q or "")
 
