@@ -2360,7 +2360,8 @@ async def chat(req: ChatReq):
                 fallback = _fallback_summary_from_ctx(ctx_for_prompt)
                 if fallback:
                     cleaned = fallback
-        if _is_refusal_like(cleaned) and ctx_for_prompt:
+        # [FIX] clarification 선택으로 특정 문서가 지정된 경우 거부 검사 스킵
+        if _is_refusal_like(cleaned) and ctx_for_prompt and not clarification_choice_src:
             fallback = _fallback_summary_from_ctx(ctx_for_prompt)
             if fallback:
                 cleaned = fallback
@@ -2809,7 +2810,9 @@ async def chat(req: ChatReq):
             fallback = _fallback_summary_from_ctx(ctx_for_prompt)
             if fallback:
                 cleaned = fallback
-    if _is_refusal_like(cleaned) and full_ctx_for_check:
+    # [FIX] clarification 선택으로 특정 문서가 지정된 경우 거부 검사 스킵
+    # Confluence 페이지 내용에 "근거 없" 등의 텍스트가 있으면 오탐 발생
+    if _is_refusal_like(cleaned) and full_ctx_for_check and not clarification_choice_src:
         fallback = _fallback_summary_from_ctx(ctx_for_prompt)
         if fallback:
             cleaned = fallback
