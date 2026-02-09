@@ -2356,7 +2356,8 @@ async def chat(req: ChatReq):
                 cleaned = clean_llm_output(raw)
             except Exception as e:
                 _dbg(f"qa_force_context_error: {e}")
-            if cleaned.strip() == "인덱스에 근거 없음":
+            # [FIX] clarification 선택 시 폴백 스킵
+            if cleaned.strip() == "인덱스에 근거 없음" and not clarification_choice_src:
                 fallback = _fallback_summary_from_ctx(ctx_for_prompt)
                 if fallback:
                     cleaned = fallback
@@ -2757,7 +2758,12 @@ async def chat(req: ChatReq):
 
     # 컨텍스트를 토큰 예산에 맞춰 컷
     ctx_for_prompt = _fit_ctx_to_budget(sys_prefix, user_for_budget, full_ctx_for_check)
-    system_prompt = build_system_with_context(ctx_for_prompt, mode, force_summary=bool(file_hint and ctx_for_prompt))
+    # [FIX] clarification 선택 시 강제 요약 모드 사용
+    if clarification_choice_src and ctx_for_prompt:
+        system_prompt = build_force_context_prompt(ctx_for_prompt)
+        _dbg(f"clarification_force_prompt: using build_force_context_prompt")
+    else:
+        system_prompt = build_system_with_context(ctx_for_prompt, mode, force_summary=bool(file_hint and ctx_for_prompt))
     max_tokens = _clamp_max_tokens(system_prompt, limited_msgs, req.max_tokens)
 
     payload = {
@@ -2806,7 +2812,8 @@ async def chat(req: ChatReq):
             cleaned = clean_llm_output(raw)
         except Exception:
             pass
-        if cleaned.strip() == "인덱스에 근거 없음":
+        # [FIX] clarification 선택 시 폴백 스킵 - LLM이 컨텍스트를 처리하도록 함
+        if cleaned.strip() == "인덱스에 근거 없음" and not clarification_choice_src:
             fallback = _fallback_summary_from_ctx(ctx_for_prompt)
             if fallback:
                 cleaned = fallback
