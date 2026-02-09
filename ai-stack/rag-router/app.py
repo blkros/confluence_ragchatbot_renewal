@@ -1929,6 +1929,20 @@ async def chat(req: ChatReq):
             if prev_user_msg and prev_user_msg.strip():
                 clean_user_msg = prev_user_msg.strip()
                 _dbg(f"clarification_choice_restore_query: original='{clean_user_msg}'")
+                # [FIX] variants도 재생성 - 원본 질문으로 RAG 검색해야 함
+                variants = generate_query_variants(clean_user_msg)
+                _dbg(f"clarification_choice_variants_regen: count={len(variants)} first='{variants[0] if variants else ''}'")
+                # 필요시 rewrite도 재실행
+                if ROUTER_REWRITE:
+                    try:
+                        rw = await _try_rewrite(clean_user_msg)
+                        if rw and rw.get("rewritten"):
+                            rewrite_q = rw["rewritten"]
+                            rewrite_meta = rw.get("meta")
+                            variants = [rewrite_q] + [v for v in variants if v != rewrite_q]
+                            _dbg(f"clarification_choice_rewrite: q='{rewrite_q}'")
+                    except Exception:
+                        pass
         else:
             _dbg(f"clarification_choice: invalid choice={choice_num}")
     # [ADD] === Clarification 체크 (inferred_src 전에 먼저 실행) ===
