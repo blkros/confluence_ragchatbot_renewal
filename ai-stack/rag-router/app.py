@@ -2057,6 +2057,20 @@ async def chat(req: ChatReq):
         spaces_hint = await _auto_pick_spaces(orig_user_msg, client)
         state = None
         reason = None
+        # [ADD] rewrite_meta에서 내부 문서 쿼리 감지 (사용자/직원 엔티티 + 업무 관련 키워드)
+        internal_doc_query = False
+        if rewrite_meta and isinstance(rewrite_meta, dict):
+            entities = rewrite_meta.get("entities") or {}
+            # "사용자", "직원", "담당자" 등 사람 관련 엔티티가 있으면 내부 문서 쿼리일 가능성 높음
+            person_keys = {"사용자", "직원", "담당자", "작성자", "user", "author", "employee"}
+            has_person = any(k.lower() in person_keys or v for k, v in entities.items() if k.lower() in person_keys)
+            # 업무 관련 키워드 체크
+            work_keywords = {"업무", "보고", "일지", "회의", "프로젝트", "일일", "주간", "월간"}
+            query_lower = (clean_user_msg or "").lower()
+            has_work_keyword = any(kw in query_lower for kw in work_keywords)
+            if has_person or has_work_keyword:
+                internal_doc_query = True
+                _dbg(f"internal_doc_detected: has_person={has_person} has_work={has_work_keyword}")
         if ROUTER_TRI_STATE:
             state, reason = _route_state(orig_user_msg, file_hint, spaces_hint, rag_followup, topic_shift)
             # LLM router override (skip only for hard RAG triggers)
@@ -2066,6 +2080,7 @@ async def chat(req: ChatReq):
                 or _CONF_HOST_RE.search(orig_user_msg or "")
                 or _CONF_HINT_RE.search(orig_user_msg or "")
                 or _PAGEID_HINT_RE.search(orig_user_msg or "")
+                or internal_doc_query  # [ADD] 내부 문서 쿼리면 RAG 강제
             )
             if ROUTER_LLM_ROUTE and not hard_required:
                 llm_state, llm_reason = await _llm_route_state(orig_user_msg, rag_followup, topic_shift)
@@ -2073,6 +2088,11 @@ async def chat(req: ChatReq):
                     state, reason = llm_state, llm_reason
                 elif ROUTER_LLM_ROUTE_STRICT:
                     state, reason = "RAG_PREFERRED", "llm_fallback"
+            # [ADD] 내부 문서 쿼리면 RAG_REQUIRED 강제 (Confluence 폴백 활성화) - LLM 결정 후 override
+            if internal_doc_query and state == "NO_RAG":
+                state = "RAG_REQUIRED"
+                reason = "internal_doc"
+                _dbg(f"internal_doc_override: forcing RAG_REQUIRED")
             if (
                 ROUTER_PRECHECK_RAG
                 and state == "NO_RAG"
