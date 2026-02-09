@@ -18,23 +18,21 @@ PoC verified on an on-prem GPU server; preparing for production hardening.
 
 ```mermaid
 flowchart LR
-    A((Query)) --> B[Router]
+    A((Query)) --> B{Router}
+    B -->|NO_RAG| C[LLM]
+    B -->|RAG| D[Proxy]
 
-    B --> C{Route?}
-    C -->|NO_RAG| D[LLM Direct]
-    C -->|RAG| E[Proxy]
+    D --> E[(FAISS)]
+    E --> F{Relevant?}
+    F -->|Yes| G[Local]
+    F -->|No| H[Confluence]
 
-    E --> F[(FAISS)]
-    F --> G{Score?}
-    G -->|High| H[Local]
-    G -->|Low| I[Confluence]
+    G --> I[Rerank]
+    H --> I
+    I --> J[LLM]
 
-    H --> J[Rerank]
-    I --> J
-    J --> K[LLM]
-
-    D --> L((Response))
-    K --> L
+    C --> K((Response))
+    J --> K
 ```
 
 ## Runtime flow (current)
