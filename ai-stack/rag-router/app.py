@@ -1925,6 +1925,17 @@ async def chat(req: ChatReq):
             file_hint_src = clarification_choice_src
             file_hint = True
             history_src = clarification_choice_src
+            # [FIX] Confluence 소스가 선택되면 MCP 폴백 트리거 (로컬 FAISS에 없음)
+            if not _LOCAL_SRC_RE.search(clarification_choice_src):
+                force_mcp = True
+                file_hint_src = ""  # 로컬 검색시 source 필터 제거
+                # Confluence URL에서 page_id 추출
+                clrf_page_id = _extract_page_id(clarification_choice_src)
+                if clrf_page_id:
+                    page_id = clrf_page_id
+                    _dbg(f"clarification_choice_confluence: src='{clarification_choice_src}' page_id={page_id} -> force_mcp=True")
+                else:
+                    _dbg(f"clarification_choice_confluence: src='{clarification_choice_src}' -> force_mcp=True (no page_id)")
             # [FIX] 원본 질문으로 복원 (사용자 입력이 "1" 같은 숫자일 때)
             if prev_user_msg and prev_user_msg.strip():
                 clean_user_msg = prev_user_msg.strip()
