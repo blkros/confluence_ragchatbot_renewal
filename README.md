@@ -17,32 +17,24 @@ PoC verified on an on-prem GPU server; preparing for production hardening.
 - rag-proxy: FAISS retrieval + rerank + context build, fallback to mcp-confluence
 
 ```mermaid
-flowchart TD
-    A[👤 User Query] --> B[rag-router]
+flowchart LR
+    A((Query)) --> B[Router]
 
-    subgraph Router["🔀 rag-router (Routing Layer)"]
-        B --> C[Query Rewriting]
-        C --> D[TRI_STATE Classification]
-        D --> E{LLM Route Decision}
-        E -->|NO_RAG| F[Direct LLM Answer]
-        E -->|RAG_REQUIRED| G[Search Required]
-        E -->|RAG_PREFERRED| G
-    end
+    B --> C{Route?}
+    C -->|NO_RAG| D[LLM Direct]
+    C -->|RAG| E[Proxy]
 
-    G --> H[rag-proxy]
+    E --> F[(FAISS)]
+    F --> G{Score?}
+    G -->|High| H[Local]
+    G -->|Low| I[Confluence]
 
-    subgraph Proxy["🔍 rag-proxy (Search Layer)"]
-        H --> I[Local FAISS Search]
-        I --> J{Quality Check}
-        J -->|Score ≥ 0.45| K[Use Local Results]
-        J -->|Score < 0.45| L[MCP Confluence Search]
-        L --> M[Merge & Rerank Results]
-        K --> M
-    end
+    H --> J[Rerank]
+    I --> J
+    J --> K[LLM]
 
-    M --> N[🤖 LLM Response Generation]
-    F --> O[📝 Response to User]
-    N --> O
+    D --> L((Response))
+    K --> L
 ```
 
 ## Runtime flow (current)
