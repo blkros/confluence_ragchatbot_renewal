@@ -304,6 +304,7 @@ def _domainish_dynamic(q: str) -> bool:
     """
     질의가 내부 도메인(사내 문서) 냄새가 나는지 동적으로 판별:
     - 대문자 약어가 있으면 즉시 True
+    - 업무 관련 키워드가 있으면 즉시 True
     - 아니면 질의 토큰 중 space-편중(purity)이 높은 토큰이 일정 개수 이상 있으면 True
     """
     # Insert spaces between ASCII and Korean/CJK for acronym detection
@@ -311,6 +312,12 @@ def _domainish_dynamic(q: str) -> bool:
     q_spaced = re.sub(r'([A-Za-z0-9])([가-힣ㄱ-ㅎㅏ-ㅣ\u4e00-\u9fff])', r'\1 \2', q or "")
     q_spaced = re.sub(r'([가-힣ㄱ-ㅎㅏ-ㅣ\u4e00-\u9fff])([A-Za-z0-9])', r'\1 \2', q_spaced)
     if _ACRONYM_BLOB_RE.search(q_spaced):
+        return True
+    # [ADD] 업무/보고 관련 키워드가 있으면 내부 문서 쿼리로 판단
+    q_lower = (q or "").lower()
+    work_keywords = {"업무보고", "업무일지", "일일보고", "주간보고", "월간보고", "회의록",
+                     "프로젝트", "일일업무", "주간업무", "보고서", "결재", "품의"}
+    if any(kw in q_lower for kw in work_keywords):
         return True
     toks = [t for t in _tokenize_query(_basic_normalize(q))
             if len(t) >= 2 and t not in _K_STOP]
