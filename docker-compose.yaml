@@ -54,6 +54,8 @@ services:
       ROUTER_PRECHECK_RAG: "1"
       ROUTER_KO_MORPH: "1"
       ROUTER_USE_SYNONYMS: "1"
+      ROUTER_USE_HINTS: "1"
+      ROUTER_RAG_REQUIRED_HINTS: "일일업무보고|주간보고|월간보고|업무보고|회의록|결재|품의|공지사항|사내규정|인사발령"
       ROUTER_MODEL_ID: "${ROUTER_MODEL_ID:-Qwen3-30B-A3B-FP8-router}"
       MAX_CTX_CHARS: "2000"
       RETRIEVE_K: "5"
