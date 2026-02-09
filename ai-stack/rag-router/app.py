@@ -325,7 +325,8 @@ def _match_upload_source_by_query(q: str) -> str:
     if not base.exists() or not base.is_dir():
         return ""
     q_norm = re.sub(r"\s+", "", _normalize_query(q).lower())
-    q_tokens = [t for t in _tokens(q) if t not in _STOPWORDS]
+    # 최소 2글자 이상인 토큰만 사용 (단일 문자 매칭 방지: "1", "일" 등)
+    q_tokens = [t for t in _tokens(q) if t not in _STOPWORDS and len(t) >= 2]
     exts = {".pdf", ".pptx", ".ppt", ".xlsx", ".xls", ".csv", ".txt", ".md", ".log", ".docx"}
     best = ("", 0)
     for p in base.iterdir():
@@ -333,11 +334,13 @@ def _match_upload_source_by_query(q: str) -> str:
             continue
         stem = _file_stem_for_query(p.name).lower()
         stem_norm = re.sub(r"\s+", "", _normalize_query(stem))
+        stem_tokens = set(t for t in _tokens(stem) if len(t) >= 2)
         score = 0
         if q_norm and q_norm in stem_norm:
             score = max(score, 5)
         for t in q_tokens:
-            if t and t in stem_norm:
+            # substring 대신 토큰 단위 매칭 (더 정확함)
+            if t and (t in stem_tokens or t in stem_norm):
                 score += 1
         if score > best[1]:
             best = (p.name, score)
@@ -1137,8 +1140,9 @@ def _assistant_used_rag(text: str) -> bool:
 def _source_query_overlap(src: str, query: str) -> bool:
     if not src or not query:
         return False
-    stem_terms = [t for t in _tokens(_file_stem_for_query(src)) if t not in _STOPWORDS]
-    q_terms = [t for t in _tokens(query) if t not in _STOPWORDS]
+    # 최소 2글자 이상인 토큰만 사용 (단일 문자 매칭 방지)
+    stem_terms = set(t for t in _tokens(_file_stem_for_query(src)) if t not in _STOPWORDS and len(t) >= 2)
+    q_terms = [t for t in _tokens(query) if t not in _STOPWORDS and len(t) >= 2]
     if not stem_terms or not q_terms:
         return False
     # 최소 2개 이상의 토큰이 매칭되어야 함 (단일 이름/단어 매칭으로 인한 오탐 방지)
