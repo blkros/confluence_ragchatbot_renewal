@@ -341,7 +341,8 @@ def _match_upload_source_by_query(q: str) -> str:
                 score += 1
         if score > best[1]:
             best = (p.name, score)
-    if best[0] and best[1] > 0:
+    # 최소 2개 이상의 토큰이 매칭되어야 함 (단일 이름/단어 매칭으로 인한 오탐 방지)
+    if best[0] and best[1] >= 2:
         return f"/app/uploads/{best[0]}"
     return ""
 
