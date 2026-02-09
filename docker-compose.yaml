@@ -16,6 +16,10 @@ services:
       HF_HOME: /cache/hf
       TRANSFORMERS_CACHE: /cache/hf/transformers
       HF_HUB_ENABLE_HF_TRANSFER: "1"
+      ENABLE_RERANKER: "1"
+      MCP_WRITEBACK: "1"
+      PPTX_OCR: "1"
+      ALLOW_PDF_CONTEXT: "1"
     ports:
       - "8080:8080"
     networks:
@@ -44,6 +48,12 @@ services:
       OPENAI_MODEL: "${OPENAI_MODEL}"
       ROUTER_DEBUG: "1"
       ROUTER_REWRITE: "1"
+      ROUTER_TRI_STATE: "1"
+      ROUTER_TRI_STATE_ENFORCE: "1"
+      ROUTER_LLM_ROUTE: "1"
+      ROUTER_PRECHECK_RAG: "1"
+      ROUTER_KO_MORPH: "1"
+      ROUTER_USE_SYNONYMS: "1"
       ROUTER_MODEL_ID: "${ROUTER_MODEL_ID:-Qwen3-30B-A3B-FP8-router}"
       MAX_CTX_CHARS: "2000"
       RETRIEVE_K: "5"
