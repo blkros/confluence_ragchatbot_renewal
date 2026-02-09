@@ -2967,7 +2967,9 @@ async def query(payload: dict = Body(...)):
         ("acronym_miss" in reasons)
     )
     explicit_src_filter = bool(src_filter) and not forced_page_id
-    if explicit_src_filter and allow_fallback:
+    # [FIX] Confluence URL이면 MCP 폴백 허용 (clarification 선택 후 페이지 fetch 필요)
+    is_confluence_src = bool(src_filter) and ("confluence" in str(src_filter).lower() or "/display/" in str(src_filter) or "/pages/" in str(src_filter))
+    if explicit_src_filter and allow_fallback and not is_confluence_src:
         allow_fallback = False
         if NEED_FALLBACK:
             NEED_FALLBACK = False
@@ -3006,6 +3008,13 @@ async def query(payload: dict = Body(...)):
             page = await _mcp_page_text_http(forced_page_id)
             if page:
                 mcp_results = [page]
+        # [FIX] Confluence URL로 선택된 경우 (pageId 없음), URL 매칭으로 필터링
+        elif is_confluence_src and src_filter and mcp_results:
+            src_norm = _norm_source(str(src_filter))
+            filtered = [r for r in mcp_results if _norm_source(r.get("url") or "") == src_norm]
+            if filtered:
+                mcp_results = filtered
+                log.info("MCP filtered by src_filter: %s -> %d results", src_filter, len(filtered))
 
         if mcp_results and not _mcp_results_have_text(mcp_results):
             log.info("MCP results missing text: q=%r page_id=%s", q, forced_page_id)
