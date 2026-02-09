@@ -1140,7 +1140,9 @@ def _source_query_overlap(src: str, query: str) -> bool:
     q_terms = [t for t in _tokens(query) if t not in _STOPWORDS]
     if not stem_terms or not q_terms:
         return False
-    return any(t in stem_terms for t in q_terms)
+    # 최소 2개 이상의 토큰이 매칭되어야 함 (단일 이름/단어 매칭으로 인한 오탐 방지)
+    overlap_count = sum(1 for t in q_terms if t in stem_terms)
+    return overlap_count >= 2
 
 def _focus_query_for_source(query: str) -> str:
     if not query:
