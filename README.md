@@ -16,6 +16,35 @@ PoC verified on an on-prem GPU server; preparing for production hardening.
 - rag-router: LLM direct vs RAG route + masking/strict gate
 - rag-proxy: FAISS retrieval + rerank + context build, fallback to mcp-confluence
 
+```mermaid
+flowchart TD
+    A[👤 User Query] --> B[rag-router]
+
+    subgraph Router["🔀 rag-router (Routing Layer)"]
+        B --> C[Query Rewriting]
+        C --> D[TRI_STATE Classification]
+        D --> E{LLM Route Decision}
+        E -->|NO_RAG| F[Direct LLM Answer]
+        E -->|RAG_REQUIRED| G[Search Required]
+        E -->|RAG_PREFERRED| G
+    end
+
+    G --> H[rag-proxy]
+
+    subgraph Proxy["🔍 rag-proxy (Search Layer)"]
+        H --> I[Local FAISS Search]
+        I --> J{Quality Check}
+        J -->|Score ≥ 0.45| K[Use Local Results]
+        J -->|Score < 0.45| L[MCP Confluence Search]
+        L --> M[Merge & Rerank Results]
+        K --> M
+    end
+
+    M --> N[🤖 LLM Response Generation]
+    F --> O[📝 Response to User]
+    N --> O
+```
+
 ## Runtime flow (current)
 - OpenWebUI → **rag-router** (tri-state routing: NO_RAG / RAG / RAG_REQUIRED, history handling, rewrite)
 - **rag-router → rag-proxy** (/qa or /query)
