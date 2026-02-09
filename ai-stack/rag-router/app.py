@@ -1925,6 +1925,10 @@ async def chat(req: ChatReq):
             file_hint_src = clarification_choice_src
             file_hint = True
             history_src = clarification_choice_src
+            # [FIX] 원본 질문으로 복원 (사용자 입력이 "1" 같은 숫자일 때)
+            if prev_user_msg and prev_user_msg.strip():
+                clean_user_msg = prev_user_msg.strip()
+                _dbg(f"clarification_choice_restore_query: original='{clean_user_msg}'")
         else:
             _dbg(f"clarification_choice: invalid choice={choice_num}")
     # [ADD] === Clarification 체크 (inferred_src 전에 먼저 실행) ===
