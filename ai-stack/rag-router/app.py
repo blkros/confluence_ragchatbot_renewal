@@ -785,8 +785,11 @@ def _extract_keywords_simple(text: str) -> list[str]:
     """
     keywords = _extract_keywords_kiwi(text)
     if keywords:
+        _dbg(f"extract_kw_kiwi: text='{text[:30]}' -> {keywords[:5]}")
         return keywords
-    return _extract_keywords_fallback(text)
+    keywords = _extract_keywords_fallback(text)
+    _dbg(f"extract_kw_fallback: text='{text[:30]}' -> {keywords[:5]}")
+    return keywords
 
 def _save_context_sticky(chat_id: str, source: str, original_query: str, doc_title: str = "") -> None:
     """Clarification 선택 후 컨텍스트 저장"""
@@ -803,7 +806,8 @@ def _save_context_sticky(chat_id: str, source: str, original_query: str, doc_tit
         "timestamp": time.time(),
         "turns": 0
     }
-    _dbg(f"context_sticky_save: chat_id={chat_id} keywords={keywords[:5]}")
+    _dbg(f"context_sticky_SAVED: chat_id={chat_id} src={source[:40]} keywords={keywords}")
+    _dbg(f"context_sticky_KEYS: {list(_CONTEXT_STICKY.keys())}")
 
     # 오래된 세션 정리
     now = time.time()
@@ -814,17 +818,22 @@ def _save_context_sticky(chat_id: str, source: str, original_query: str, doc_tit
 
 def _get_context_sticky(chat_id: str) -> dict | None:
     """저장된 컨텍스트 반환 (없거나 만료되면 None)"""
+    _dbg(f"context_sticky_GET: chat_id={chat_id} available_keys={list(_CONTEXT_STICKY.keys())}")
     ctx = _CONTEXT_STICKY.get(chat_id)
     if not ctx:
+        _dbg(f"context_sticky_GET: NOT FOUND for chat_id={chat_id}")
         return None
     # 시간 초과 체크
     if time.time() - ctx["timestamp"] > _CONTEXT_STICKY_TIMEOUT:
+        _dbg(f"context_sticky_GET: EXPIRED for chat_id={chat_id}")
         del _CONTEXT_STICKY[chat_id]
         return None
     # 턴 수 체크
     if ctx["turns"] >= _CONTEXT_STICKY_TURNS:
+        _dbg(f"context_sticky_GET: MAX_TURNS for chat_id={chat_id}")
         del _CONTEXT_STICKY[chat_id]
         return None
+    _dbg(f"context_sticky_GET: FOUND ctx for chat_id={chat_id} keywords={ctx.get('keywords', [])[:3]}")
     return ctx
 
 def _increment_context_sticky_turn(chat_id: str) -> None:
@@ -856,6 +865,8 @@ def _check_keyword_overlap(query: str, ctx_keywords: list[str]) -> bool:
     ctx_kw = set(ctx_keywords)
     overlap = query_kw & ctx_kw
 
+    _dbg(f"keyword_overlap_check: query_kw={list(query_kw)[:5]} ctx_kw={list(ctx_kw)[:5]} overlap={overlap}")
+
     # 키워드 겹침 있으면 True
     if len(overlap) >= 1:
         _dbg(f"keyword_overlap: found {overlap}")
@@ -866,6 +877,7 @@ def _check_keyword_overlap(query: str, ctx_keywords: list[str]) -> bool:
         _dbg(f"keyword_overlap: no keyword match but pronoun detected in '{query}'")
         return True
 
+    _dbg(f"keyword_overlap: no match, returning False")
     return False
 
 def _detect_followup_type(query: str, ctx: dict) -> str:
