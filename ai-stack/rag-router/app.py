@@ -2259,8 +2259,9 @@ async def chat(req: ChatReq):
             _dbg(f"clarification_choice: invalid choice={choice_num}")
 
     # [ADD] === 후속 질문 컨텍스트 확인 ===
-    # clarification 선택이 아니고, 이전에 선택한 문서 컨텍스트가 있으면 후속 질문 타입 확인
-    if not is_choice and not has_explicit_upload:
+    # clarification 선택이 아니고, 메타태스크가 아니고, 이전에 선택한 문서 컨텍스트가 있으면 후속 질문 타입 확인
+    # ⚠️ _is_webui_task 체크 필수: open-webui의 태그/follow-up 생성 요청에서 컨텍스트 클리어 방지
+    if not is_choice and not has_explicit_upload and not _is_webui_task(orig_user_msg):
         ctx_sticky = _get_context_sticky(chat_id)
         if ctx_sticky:
             # 순수 사용자 질문만 추출 (시스템 프롬프트 제외) - 패턴 매칭 정확도 향상
