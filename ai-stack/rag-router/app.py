@@ -1834,7 +1834,11 @@ async def chat(req: ChatReq):
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
                     clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
-                    clarify_resp = (await cl.post(f"{RAG}/query", json=clarify_payload)).json()
+                    resp = await cl.post(f"{RAG}/query", json=clarify_payload)
+                    if resp.status_code != 200 or not resp.text.strip():
+                        _dbg(f"clarification_top_skip: status={resp.status_code} empty={not resp.text.strip()}")
+                        raise ValueError(f"Invalid response: status={resp.status_code}")
+                    clarify_resp = resp.json()
                     if clarify_resp.get("clarification_needed"):
                         candidates = clarify_resp.get("candidates", [])
                         message = clarify_resp.get("message", "문서를 선택해주세요.")
@@ -1948,7 +1952,10 @@ async def chat(req: ChatReq):
                 try:
                     async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
                         re_payload = {"q": prev_user_msg, "k": 5, "sticky": False}
-                        re_resp = (await cl.post(f"{RAG}/query", json=re_payload)).json()
+                        resp = await cl.post(f"{RAG}/query", json=re_payload)
+                        if resp.status_code != 200 or not resp.text.strip():
+                            raise ValueError(f"Invalid response: status={resp.status_code}")
+                        re_resp = resp.json()
                         _dbg(f"clarification_requery: clarification_needed={re_resp.get('clarification_needed')} candidates={len(re_resp.get('candidates', []))}")
                         if re_resp.get("clarification_needed"):
                             candidates = re_resp.get("candidates", [])
@@ -2002,7 +2009,11 @@ async def chat(req: ChatReq):
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
                 _add_trace(clarify_payload, trace_id)
-                clarify_resp = (await cl.post(f"{RAG}/query", json=clarify_payload)).json()
+                resp = await cl.post(f"{RAG}/query", json=clarify_payload)
+                if resp.status_code != 200 or not resp.text.strip():
+                    _dbg(f"clarification_early_skip: status={resp.status_code} empty={not resp.text.strip()}")
+                    raise ValueError(f"Invalid response: status={resp.status_code}")
+                clarify_resp = resp.json()
                 if clarify_resp.get("clarification_needed"):
                     candidates = clarify_resp.get("candidates", [])
                     message = clarify_resp.get("message", "문서를 선택해주세요.")
@@ -2198,7 +2209,11 @@ async def chat(req: ChatReq):
                 if spaces_hint:
                     clarify_payload["spaces"] = spaces_hint
                 _add_trace(clarify_payload, trace_id)
-                clarify_resp = (await client.post(f"{RAG}/query", json=clarify_payload)).json()
+                resp = await client.post(f"{RAG}/query", json=clarify_payload)
+                if resp.status_code != 200 or not resp.text.strip():
+                    _dbg(f"clarification_qa_skip: status={resp.status_code} empty={not resp.text.strip()}")
+                    raise ValueError(f"Invalid response: status={resp.status_code}")
+                clarify_resp = resp.json()
                 if clarify_resp.get("clarification_needed"):
                     candidates = clarify_resp.get("candidates", [])
                     message = clarify_resp.get("message", "문서를 선택해주세요.")
