@@ -1790,6 +1790,11 @@ async def chat(req: ChatReq):
     # [ADD] 파일 업로드 힌트 체크 (한 번만 정의, 전역 사용)
     has_explicit_upload = bool(re.search(r'첨부|업로드|올린|attach|upload', clean_user_msg, re.IGNORECASE))
 
+    # [FIX] chat_id를 세션 키로 사용 (매 요청마다 동일)
+    metadata = req.metadata or {}
+    chat_id = metadata.get("chat_id") or trace_id  # chat_id가 없으면 trace_id 사용
+    _dbg(f"session_key: chat_id={chat_id} trace_id={trace_id}")
+
     # [ADD] === 맨 앞에서 Clarification 체크 (모든 로직 전에) ===
     # 메타태스크가 아니고, 모호한 키워드가 있으면 clarification 체크
     _vague_kw = ["요약", "내용", "정리", "설명", "알려"]
@@ -1809,8 +1814,9 @@ async def chat(req: ChatReq):
                         candidates = clarify_resp.get("candidates", [])
                         message = clarify_resp.get("message", "문서를 선택해주세요.")
                         if candidates:
+                            _save_clarification(chat_id, candidates)  # [FIX] chat_id로 저장
                             content = _format_clarification_message(candidates, message)
-                            _dbg(f"clarification_top: trace_id={trace_id} q='{clean_user_msg}' candidates={len(candidates)}")
+                            _dbg(f"clarification_top: chat_id={chat_id} q='{clean_user_msg}' candidates={len(candidates)}")
                             return _attach_trace({
                                 "id": f"cmpl-{uuid.uuid4()}",
                                 "object": "chat.completion",
@@ -1835,7 +1841,7 @@ async def chat(req: ChatReq):
         or _PAGEID_HINT_RE.search(clean_user_msg or "")
     )
     force_mcp = bool(page_id or confluence_hint)
-    metadata = req.metadata or {}
+    # metadata는 이미 위에서 정의됨 (chat_id 추출용)
     meta_sources = _extract_sources_from_metadata(metadata)
     meta_primary_src = meta_sources[0] if meta_sources else ""
     meta_src_set = meta_sources if len(meta_sources) > 1 else None
@@ -1905,20 +1911,27 @@ async def chat(req: ChatReq):
         if clarification_choice_src:
             _dbg(f"clarification_choice_from_html: choice={choice_num} src='{clarification_choice_src}'")
         else:
-            # 2) HTML 주석 추출 실패시 re-query 시도 (fallback)
-            _dbg(f"clarification_html_miss: choice={choice_num}, trying re-query")
-            try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
-                    re_payload = {"q": prev_user_msg, "k": 5, "sticky": False}
-                    re_resp = (await cl.post(f"{RAG}/query", json=re_payload)).json()
-                    _dbg(f"clarification_requery: clarification_needed={re_resp.get('clarification_needed')} candidates={len(re_resp.get('candidates', []))}")
-                    if re_resp.get("clarification_needed"):
-                        candidates = re_resp.get("candidates", [])
-                        if 1 <= choice_num <= len(candidates):
-                            clarification_choice_src = candidates[choice_num - 1].get("source")
-                            _dbg(f"clarification_choice_resolved: choice={choice_num} src='{clarification_choice_src}'")
-            except Exception as e:
-                _dbg(f"clarification_choice_error: {type(e).__name__}: {e}")
+            # 2) [FIX] chat_id 기반 세션에서 조회 시도
+            _dbg(f"clarification_html_miss: choice={choice_num}, trying session lookup with chat_id={chat_id}")
+            session_src = _get_clarification_choice(chat_id, choice_num)
+            if session_src:
+                clarification_choice_src = session_src
+                _dbg(f"clarification_choice_from_session: choice={choice_num} src='{clarification_choice_src}'")
+            else:
+                # 3) 세션에도 없으면 re-query 시도 (fallback)
+                _dbg(f"clarification_session_miss: choice={choice_num}, trying re-query")
+                try:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
+                        re_payload = {"q": prev_user_msg, "k": 5, "sticky": False}
+                        re_resp = (await cl.post(f"{RAG}/query", json=re_payload)).json()
+                        _dbg(f"clarification_requery: clarification_needed={re_resp.get('clarification_needed')} candidates={len(re_resp.get('candidates', []))}")
+                        if re_resp.get("clarification_needed"):
+                            candidates = re_resp.get("candidates", [])
+                            if 1 <= choice_num <= len(candidates):
+                                clarification_choice_src = candidates[choice_num - 1].get("source")
+                                _dbg(f"clarification_choice_resolved: choice={choice_num} src='{clarification_choice_src}'")
+                except Exception as e:
+                    _dbg(f"clarification_choice_error: {type(e).__name__}: {e}")
 
         if clarification_choice_src:
             # 선택한 source를 file_hint_src로 사용
@@ -1969,7 +1982,7 @@ async def chat(req: ChatReq):
                     candidates = clarify_resp.get("candidates", [])
                     message = clarify_resp.get("message", "문서를 선택해주세요.")
                     if candidates:
-                        _save_clarification(trace_id, candidates)  # [FIX] 세션에 저장 추가
+                        _save_clarification(chat_id, candidates)  # [FIX] 세션에 저장 추가
                         content = _format_clarification_message(candidates, message)
                         _dbg(f"clarification_early: trace_id={trace_id} candidates={len(candidates)}")
                         return _attach_trace({
@@ -2165,7 +2178,7 @@ async def chat(req: ChatReq):
                     candidates = clarify_resp.get("candidates", [])
                     message = clarify_resp.get("message", "문서를 선택해주세요.")
                     if candidates:
-                        _save_clarification(trace_id, candidates)
+                        _save_clarification(chat_id, candidates)
                         content = _format_clarification_message(candidates, message)
                         _dbg(f"clarification_early: trace_id={trace_id} candidates={len(candidates)}")
                         return _attach_trace({
@@ -2455,7 +2468,7 @@ async def chat(req: ChatReq):
                     candidates = qj.get("candidates", [])
                     message = qj.get("message", "문서를 선택해주세요.")
                     if candidates:
-                        _save_clarification(trace_id, candidates)
+                        _save_clarification(chat_id, candidates)
                         content = _format_clarification_message(candidates, message)
                         _dbg(f"clarification: trace_id={trace_id} candidates={len(candidates)}")
                         return _attach_trace({
