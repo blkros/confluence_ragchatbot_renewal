@@ -2407,7 +2407,6 @@ async def query(payload: dict = Body(...)):
             # 2) 원본 쿼리로 못 찾으면 제목에서 핵심 키워드 추출하여 검색
             if not fallback_results and parent_title and len(parent_title) >= 2:
                 # "배홍진 - 2026년 02월" -> "배홍진" 추출
-                import re
                 name_match = re.match(r'^([가-힣a-zA-Z]+)', parent_title)
                 search_term = name_match.group(1) if name_match else parent_title
                 log.info("MCP fallback 2: searching by extracted name: %r from title %r", search_term, parent_title)
