@@ -767,6 +767,32 @@ def _extract_keywords_kiwi(text: str) -> list[str]:
     return result
 
 
+def _extract_keywords_with_pos(text: str) -> list[tuple[str, str]]:
+    """
+    kiwipiepy 형태소 분석 기반 키워드 + 품사 추출
+    Returns: [(keyword, pos), ...] - 예: [("배홍진", "NNP"), ("업무", "NNG"), ("Docker", "SL")]
+    """
+    if not (_KIWI_OK and USE_KO_MORPH):
+        return []
+    kiwi = _get_kiwi()
+    if not kiwi:
+        return []
+
+    result = []
+    for token in kiwi.tokenize(text or ""):
+        pos = getattr(token, "tag", "") or getattr(token, "pos", "")
+        form = (token.form or "").strip()
+
+        # NNG(일반명사), NNP(고유명사), NNB(의존명사), SL(외래어), SN(숫자)
+        if pos in ("NNG", "NNP", "NNB", "SL", "SN"):
+            if len(form) >= 2 or (pos == "SN" and form):
+                w_lower = form.lower()
+                if w_lower not in _VERB_STOPS:
+                    result.append((w_lower, pos))
+
+    return result
+
+
 def _extract_keywords_fallback(text: str) -> list[str]:
     """kiwipiepy 사용 불가시 폴백 (regex + 조사 제거)"""
     particles = re.compile(r"(에서|에게|에는|에도|으로|이고|이나|이란|이라|에|를|을|은|는|이|가|의|와|과|도|만|로)$")
@@ -797,21 +823,35 @@ def _extract_keywords_simple(text: str) -> list[str]:
     return keywords
 
 def _save_context_sticky(chat_id: str, source: str, original_query: str, doc_title: str = "") -> None:
-    """Clarification 선택 후 컨텍스트 저장"""
+    """Clarification 선택 후 컨텍스트 저장 (키워드 + 품사 정보 포함)"""
+    # 기존 키워드 (하위 호환성)
     keywords = _extract_keywords_simple(original_query)
     if doc_title:
         keywords.extend(_extract_keywords_simple(doc_title))
     keywords = list(set(keywords))  # 중복 제거
+
+    # [NEW] 품사 포함 키워드 추출
+    keywords_with_pos = _extract_keywords_with_pos(original_query)
+    if doc_title:
+        keywords_with_pos.extend(_extract_keywords_with_pos(doc_title))
+    # 중복 제거 (keyword 기준)
+    seen = set()
+    keywords_with_pos_unique = []
+    for kw, pos in keywords_with_pos:
+        if kw not in seen:
+            seen.add(kw)
+            keywords_with_pos_unique.append((kw, pos))
 
     _CONTEXT_STICKY[chat_id] = {
         "source": source,
         "topic": original_query,
         "doc_title": doc_title,
         "keywords": keywords,
+        "keywords_with_pos": keywords_with_pos_unique,  # [NEW] 품사 정보 포함
         "timestamp": time.time(),
         "turns": 0
     }
-    _dbg(f"context_sticky_SAVED: chat_id={chat_id} src={source[:40]} keywords={keywords}")
+    _dbg(f"context_sticky_SAVED: chat_id={chat_id} src={source[:40]} keywords={keywords} with_pos={keywords_with_pos_unique[:5]}")
     _dbg(f"context_sticky_KEYS: {list(_CONTEXT_STICKY.keys())}")
 
     # 오래된 세션 정리
@@ -861,21 +901,55 @@ def _has_pronoun_reference(query: str) -> bool:
     return False
 
 
-def _check_keyword_overlap(query: str, ctx_keywords: list[str]) -> bool:
-    """
-    하이브리드 키워드 겹침 확인:
-    1. kiwipiepy로 추출한 키워드 간 교집합 확인
-    2. 키워드 없지만 대명사("그거", "이거" 등) 포함시 연속성 추정
-    """
-    query_kw = set(_extract_keywords_simple(query))
-    ctx_kw = set(ctx_keywords)
-    overlap = query_kw & ctx_kw
+# [NEW] 품사 기반 키워드 겹침 체크 - 고유명사/외래어는 1개, 일반명사는 2개 이상
+# NNP(고유명사), SL(외래어) → 주제 특정성 높음 (1개만 겹쳐도 연관)
+# NNG(일반명사), NNB(의존명사), SN(숫자) → 범용성 높음 (2개 이상 겹쳐야 연관)
+_HIGH_SPECIFICITY_POS = {"NNP", "SL"}  # 고유명사, 외래어
+_LOW_SPECIFICITY_POS = {"NNG", "NNB", "SN"}  # 일반명사, 의존명사, 숫자
 
-    _dbg(f"keyword_overlap_check: query_kw={list(query_kw)[:5]} ctx_kw={list(ctx_kw)[:5]} overlap={overlap}")
 
-    # 키워드 겹침 있으면 True
-    if len(overlap) >= 1:
-        _dbg(f"keyword_overlap: found {overlap}")
+def _check_keyword_overlap(query: str, ctx_keywords_with_pos: list[tuple[str, str]]) -> bool:
+    """
+    품사 기반 키워드 겹침 확인:
+    - NNP(고유명사), SL(외래어) 겹침: 1개만 있어도 연관성 인정
+    - NNG(일반명사) 겹침: 2개 이상 있어야 연관성 인정
+    - 대명사("그거", "이거" 등) 포함시 연속성 추정
+    """
+    # 쿼리에서 품사 포함 키워드 추출
+    query_kw_pos = _extract_keywords_with_pos(query)
+    if not query_kw_pos:
+        # kiwipiepy 실패시 폴백 - 기존 방식 사용
+        query_kw = set(_extract_keywords_simple(query))
+        ctx_kw = set(kw for kw, pos in ctx_keywords_with_pos) if ctx_keywords_with_pos else set()
+        overlap = query_kw & ctx_kw
+        _dbg(f"keyword_overlap_fallback: overlap={overlap}")
+        if len(overlap) >= 2:  # 폴백시 2개 이상 필요
+            return True
+        return _has_pronoun_reference(query)
+
+    # 품사별로 분류
+    query_high = {kw for kw, pos in query_kw_pos if pos in _HIGH_SPECIFICITY_POS}  # 고유명사, 외래어
+    query_low = {kw for kw, pos in query_kw_pos if pos in _LOW_SPECIFICITY_POS}    # 일반명사
+
+    ctx_high = {kw for kw, pos in ctx_keywords_with_pos if pos in _HIGH_SPECIFICITY_POS}
+    ctx_low = {kw for kw, pos in ctx_keywords_with_pos if pos in _LOW_SPECIFICITY_POS}
+
+    # 고유명사/외래어 겹침 확인 (1개만 있어도 연관)
+    high_overlap = query_high & ctx_high
+    # 일반명사 겹침 확인 (2개 이상 필요)
+    low_overlap = query_low & ctx_low
+
+    _dbg(f"keyword_overlap_pos: query_high={query_high} query_low={list(query_low)[:3]} ctx_high={ctx_high} ctx_low={list(ctx_low)[:3]}")
+    _dbg(f"keyword_overlap_pos: high_overlap={high_overlap} low_overlap={low_overlap}")
+
+    # 고유명사/외래어가 1개라도 겹치면 연관
+    if len(high_overlap) >= 1:
+        _dbg(f"keyword_overlap: HIGH specificity match {high_overlap}")
+        return True
+
+    # 일반명사가 2개 이상 겹치면 연관
+    if len(low_overlap) >= 2:
+        _dbg(f"keyword_overlap: LOW specificity match (2+) {low_overlap}")
         return True
 
     # 키워드 겹침 없지만 대명사가 있으면 연속성 추정
@@ -888,7 +962,7 @@ def _check_keyword_overlap(query: str, ctx_keywords: list[str]) -> bool:
 
 def _detect_followup_type(query: str, ctx: dict) -> str:
     """
-    후속 질문 타입 감지
+    후속 질문 타입 감지 (품사 기반)
     Returns: "document" | "general" | "ambiguous" | "unrelated"
     """
     # 명확하게 문서 참조
@@ -897,8 +971,12 @@ def _detect_followup_type(query: str, ctx: dict) -> str:
     # 명확하게 일반 지식 요청
     if _FOLLOWUP_GENERAL_PATTERNS.search(query):
         return "general"
-    # 키워드 겹침 확인
-    if _check_keyword_overlap(query, ctx.get("keywords", [])):
+    # [NEW] 품사 기반 키워드 겹침 확인 (keywords_with_pos 우선, 없으면 keywords 폴백)
+    ctx_kw_pos = ctx.get("keywords_with_pos", [])
+    if not ctx_kw_pos:
+        # 하위 호환: 기존 keywords만 있는 경우 → 품사 없이 단어만으로 튜플 생성
+        ctx_kw_pos = [(kw, "NNG") for kw in ctx.get("keywords", [])]  # 기본 NNG로 처리
+    if _check_keyword_overlap(query, ctx_kw_pos):
         return "ambiguous"  # 키워드는 겹치지만 의도 불명확
     return "unrelated"  # 완전히 다른 주제
 
