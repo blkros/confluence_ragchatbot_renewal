@@ -117,9 +117,15 @@ def _cql_terms(text: str, max_terms: int = 5) -> t.List[str]:
     return [t for t in terms if t]
 
 def _cql_or_clause(terms: t.List[str]) -> str:
+    """
+    Build CQL clause that requires ALL terms to match (AND logic).
+    Each term can appear in title OR text, but all terms must be present.
+    Example: ["EMS", "인수인계"] -> (title ~ "EMS" OR text ~ "EMS") AND (title ~ "인수인계" OR text ~ "인수인계")
+    """
     if not terms:
         return ""
-    return " OR ".join([f'(title ~ "{t}" OR text ~ "{t}")' for t in terms])
+    # Use AND to require all terms, each term can be in title OR text
+    return " AND ".join([f'(title ~ "{t}" OR text ~ "{t}")' for t in terms])
 
 def _rank_candidates(items: t.List[dict], query: str) -> t.List[dict]:
     terms = [t.lower() for t in _cql_terms(query, max_terms=5)]
