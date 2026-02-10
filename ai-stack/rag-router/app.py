@@ -829,8 +829,9 @@ def _get_context_sticky(chat_id: str) -> dict | None:
         _dbg(f"context_sticky_GET: NOT FOUND for chat_id={chat_id}")
         return None
     # 시간 초과 체크
-    if time.time() - ctx["timestamp"] > _CONTEXT_STICKY_TIMEOUT:
-        _dbg(f"context_sticky_GET: EXPIRED for chat_id={chat_id}")
+    elapsed = time.time() - ctx["timestamp"]
+    if elapsed > _CONTEXT_STICKY_TIMEOUT:
+        _dbg(f"context_sticky_GET: EXPIRED for chat_id={chat_id} elapsed={elapsed:.1f}s timeout={_CONTEXT_STICKY_TIMEOUT}s")
         del _CONTEXT_STICKY[chat_id]
         return None
     # 턴 수 체크
