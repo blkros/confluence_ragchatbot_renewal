@@ -2329,6 +2329,11 @@ async def query(payload: dict = Body(...)):
     if not forced_page_id and page_id:
         forced_page_id = page_id
 
+    # [FIX] clarification_choice가 Confluence URL이면 강제 MCP 경로로
+    if forced_page_id and clarification_choice and "confluence" in str(clarification_choice).lower():
+        confl_hint = True
+        log.info("clarification_choice is Confluence URL, forcing confl_hint=True: page_id=%s", forced_page_id)
+
     # 3) space 힌트/allowed_spaces (→ 강제 Confluence 분기 전에 계산)
     space = (payload or {}).get("space") or (payload or {}).get("spaceKey")
     allowed_spaces = _resolve_allowed_spaces((payload or {}).get("spaces"))
