@@ -952,6 +952,20 @@ def _check_keyword_overlap(query: str, ctx_keywords_with_pos: list[tuple[str, st
         _dbg(f"keyword_overlap: LOW specificity match (2+) {low_overlap}")
         return True
 
+    # [FIX] 일반명사 1개일 때: 동작/요청어 제외하고 주제어만 있으면 연관
+    # "요약", "정리", "설명" 등은 주제가 아닌 동작 요청
+    # "도커", "리눅스", "EMS" 등은 실제 주제
+    if len(low_overlap) == 1:
+        _GENERIC_ACTION_WORDS = {"요약", "정리", "설명", "내용", "상세", "자세", "알려", "보여", "찾아",
+                                  "검색", "조회", "확인", "분석", "비교", "정보", "목록", "리스트"}
+        meaningful_overlap = low_overlap - _GENERIC_ACTION_WORDS
+        if meaningful_overlap:
+            _dbg(f"keyword_overlap: LOW specificity meaningful match {meaningful_overlap}")
+            return True
+        else:
+            _dbg(f"keyword_overlap: LOW specificity but only generic words {low_overlap}")
+            # 동작어만 겹치면 연관 아님
+
     # 키워드 겹침 없지만 대명사가 있으면 연속성 추정
     if _has_pronoun_reference(query):
         _dbg(f"keyword_overlap: no keyword match but pronoun detected in '{query}'")
