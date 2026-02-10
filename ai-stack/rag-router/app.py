@@ -2155,6 +2155,7 @@ async def chat(req: ChatReq):
 
     # [ADD] 후속 질문 Clarification 응답 처리 (1=문서, 2=일반)
     # 이전 메시지가 후속 질문 clarification이고 사용자가 1 또는 2를 입력한 경우
+    followup_choice_handled = False  # [FIX] 후속 질문 선택 처리 완료 플래그
     if prev_assistant_msg and "문서를 기반으로 답변할까요?" in prev_assistant_msg:
         is_followup_choice, followup_num = _is_number_choice(clean_user_msg)
         if is_followup_choice and followup_num in (1, 2):
@@ -2171,11 +2172,13 @@ async def chat(req: ChatReq):
                     force_mcp = True
                     page_id = _extract_page_id(file_hint_src) or page_id
                 _increment_context_sticky_turn(chat_id)
+                followup_choice_handled = True  # [FIX] 처리 완료 플래그 설정
                 _dbg(f"followup_choice_document: source='{file_hint_src[:50]}...' query='{clean_user_msg[:50]}'")
             else:
                 # 일반 지식 선택 → 컨텍스트 클리어하고 LLM 사용
                 _clear_context_sticky(chat_id)
                 clean_user_msg = pending_query or clean_user_msg
+                followup_choice_handled = True  # [FIX] 처리 완료 플래그 설정
                 _dbg(f"followup_choice_general: cleared context, query='{clean_user_msg[:50]}'")
 
     # [ADD] Clarification 번호 선택 처리
@@ -2262,7 +2265,8 @@ async def chat(req: ChatReq):
     # [ADD] === 후속 질문 컨텍스트 확인 ===
     # clarification 선택이 아니고, 메타태스크가 아니고, 이전에 선택한 문서 컨텍스트가 있으면 후속 질문 타입 확인
     # ⚠️ _is_webui_task 체크 필수: open-webui의 태그/follow-up 생성 요청에서 컨텍스트 클리어 방지
-    if not is_choice and not has_explicit_upload and not _is_webui_task(orig_user_msg):
+    # ⚠️ followup_choice_handled 체크: 이미 후속 질문 선택(1/2)이 처리된 경우 스킵
+    if not is_choice and not has_explicit_upload and not _is_webui_task(orig_user_msg) and not followup_choice_handled:
         ctx_sticky = _get_context_sticky(chat_id)
         if ctx_sticky:
             # 순수 사용자 질문만 추출 (시스템 프롬프트 제외) - 패턴 매칭 정확도 향상
@@ -2311,7 +2315,8 @@ async def chat(req: ChatReq):
     # [ADD] === Clarification 체크 (inferred_src 전에 먼저 실행) ===
     # clarification_choice가 없고, 메타태스크가 아니고, 명시적 파일 첨부가 아니면 clarification 체크
     # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵 (has_explicit_upload는 상단에서 정의됨)
-    if not clarification_choice_src and not _is_webui_task(orig_user_msg) and not has_explicit_upload:
+    # ⚠️ followup_choice_handled 체크: 이미 후속 질문 선택(1/2)이 처리된 경우 스킵
+    if not clarification_choice_src and not _is_webui_task(orig_user_msg) and not has_explicit_upload and not followup_choice_handled:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
