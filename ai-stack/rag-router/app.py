@@ -739,26 +739,31 @@ _PRONOUN_PATTERNS = re.compile(r"^(그거|이거|저거|그것|이것|저것|그
 def _extract_keywords_kiwi(text: str) -> list[str]:
     """
     kiwipiepy 형태소 분석 기반 키워드 추출
-    - 명사(NNG, NNP), 외래어(SL), 숫자(SN) 추출
+    - 명사(NNG, NNP, NNB), 외래어(SL), 숫자(SN) 추출
     - 동사/조사/어미는 자동 제외됨
     """
     if not (_KIWI_OK and USE_KO_MORPH):
+        _dbg("kiwi_extract: DISABLED (KIWI_OK={} USE_KO_MORPH={})".format(_KIWI_OK, USE_KO_MORPH))
         return []
     kiwi = _get_kiwi()
     if not kiwi:
         return []
 
     result = []
+    all_tokens = []  # 디버그용
     for token in kiwi.tokenize(text or ""):
         pos = getattr(token, "tag", "") or getattr(token, "pos", "")
         form = (token.form or "").strip()
+        all_tokens.append(f"{form}/{pos}")
 
-        # NNG(일반명사), NNP(고유명사), SL(외래어), SN(숫자)
-        if pos in ("NNG", "NNP", "SL", "SN"):
-            if len(form) >= 2 or (pos == "SN" and form):  # 숫자는 1자도 허용
+        # NNG(일반명사), NNP(고유명사), NNB(의존명사), SL(외래어), SN(숫자)
+        if pos in ("NNG", "NNP", "NNB", "SL", "SN"):
+            if len(form) >= 2 or (pos == "SN" and form):
                 w_lower = form.lower()
                 if w_lower not in _VERB_STOPS:
                     result.append(w_lower)
+
+    _dbg(f"kiwi_tokenize: '{text[:40]}' -> {all_tokens[:10]}")
     return result
 
 
@@ -1732,6 +1737,7 @@ def pick_answer_mode(user_msg: str, ctx_text: str) -> str:
 # --- utils ----------------------------------------------------
 
 def normalize_query_router(q: str) -> str:
+    """RAG 처리용 쿼리 정규화 (시스템 프롬프트 유지 - 대화맥락 도움)"""
     if not q: return ""
     s = q.strip()
     s = _CONTEXT_CUT_RE.sub("", s)
@@ -1741,7 +1747,23 @@ def normalize_query_router(q: str) -> str:
             s = s[:m.start()].rstrip()
     s = re.sub(r'(?i)\bstfp\b|\bsfttp\b|\bsfpt\b|\bsftp\b', 'SFTP', s)
     s = s.replace("스텝", "SFTP")
-    return s
+    return s.strip()
+
+
+def _extract_pure_user_query(q: str) -> str:
+    """
+    후속 질문 타입 감지용 - 시스템 프롬프트 제거하고 순수 사용자 질문만 추출
+    (RAG 처리에는 normalize_query_router 사용)
+    """
+    if not q:
+        return ""
+    # ### Task:, ### Instructions: 등 시스템 프롬프트 제거
+    s = re.sub(r'###\s*(Task|Instructions?|System|Context|Reference)[:\s].*', '', q, flags=re.I | re.S)
+    # 앞뒤 공백 및 빈 줄 정리
+    s = re.sub(r'\n\s*\n', '\n', s).strip()
+    # 여러 줄이면 첫 번째 유의미한 줄 (보통 사용자 질문)
+    lines = [l.strip() for l in s.split('\n') if l.strip() and not l.strip().startswith('#')]
+    return lines[0] if lines else s
 
 def _expand_synonyms(s: str) -> list[str]:
     out = [s]
@@ -2241,8 +2263,10 @@ async def chat(req: ChatReq):
     if not is_choice and not has_explicit_upload:
         ctx_sticky = _get_context_sticky(chat_id)
         if ctx_sticky:
-            followup_type = _detect_followup_type(clean_user_msg, ctx_sticky)
-            _dbg(f"followup_detect: chat_id={chat_id} type={followup_type} query='{clean_user_msg[:50]}'")
+            # 순수 사용자 질문만 추출 (시스템 프롬프트 제외) - 패턴 매칭 정확도 향상
+            pure_query = _extract_pure_user_query(clean_user_msg)
+            followup_type = _detect_followup_type(pure_query, ctx_sticky)
+            _dbg(f"followup_detect: chat_id={chat_id} type={followup_type} pure_query='{pure_query[:50]}'")
 
             if followup_type == "document":
                 # 명확하게 문서 참조 → 이전 소스 사용
