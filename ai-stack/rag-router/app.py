@@ -729,12 +729,64 @@ def _get_clarification_choice(session_id: str, choice_num: int) -> str | None:
 
 # === 컨텍스트 연속성 (후속 질문 처리) ===
 
-def _extract_keywords_simple(text: str) -> list[str]:
-    """간단한 키워드 추출 (한글 2자 이상, 영문 2자 이상)"""
-    # 불용어
-    stops = {"에서", "으로", "하고", "해서", "대해", "대한", "관련", "내용", "설명", "요약", "자세히", "더", "좀"}
+# 동사/명령형 불용어 (검색에 의미 없는 동사/보조용언)
+_VERB_STOPS = {"해줘", "해주세요", "알려줘", "알려주세요", "설명해줘", "설명해주세요",
+               "보여줘", "보여주세요", "찾아줘", "찾아주세요", "알려", "해줘요"}
+
+# 대명사 패턴 (문서 연속성 추정용)
+_PRONOUN_PATTERNS = re.compile(r"^(그거|이거|저거|그것|이것|저것|그|이|저|그게|이게|저게|여기|거기|저기|위|아래)$")
+
+def _extract_keywords_kiwi(text: str) -> list[str]:
+    """
+    kiwipiepy 형태소 분석 기반 키워드 추출
+    - 명사(NNG, NNP), 외래어(SL), 숫자(SN) 추출
+    - 동사/조사/어미는 자동 제외됨
+    """
+    if not (_KIWI_OK and USE_KO_MORPH):
+        return []
+    kiwi = _get_kiwi()
+    if not kiwi:
+        return []
+
+    result = []
+    for token in kiwi.tokenize(text or ""):
+        pos = getattr(token, "tag", "") or getattr(token, "pos", "")
+        form = (token.form or "").strip()
+
+        # NNG(일반명사), NNP(고유명사), SL(외래어), SN(숫자)
+        if pos in ("NNG", "NNP", "SL", "SN"):
+            if len(form) >= 2 or (pos == "SN" and form):  # 숫자는 1자도 허용
+                w_lower = form.lower()
+                if w_lower not in _VERB_STOPS:
+                    result.append(w_lower)
+    return result
+
+
+def _extract_keywords_fallback(text: str) -> list[str]:
+    """kiwipiepy 사용 불가시 폴백 (regex + 조사 제거)"""
+    particles = re.compile(r"(에서|에게|에는|에도|으로|이고|이나|이란|이라|에|를|을|은|는|이|가|의|와|과|도|만|로)$")
     words = re.findall(r"[가-힣]{2,}|[a-zA-Z]{2,}", text)
-    return [w.lower() for w in words if w.lower() not in stops]
+    result = []
+    for w in words:
+        w_clean = particles.sub("", w)
+        if len(w_clean) < 2:
+            w_clean = w
+        w_lower = w_clean.lower()
+        if w_lower not in _VERB_STOPS and len(w_lower) >= 2:
+            result.append(w_lower)
+    return result
+
+
+def _extract_keywords_simple(text: str) -> list[str]:
+    """
+    하이브리드 키워드 추출:
+    1. kiwipiepy 형태소 분석 시도 (NNG, NNP, SL, SN)
+    2. 실패시 regex 폴백
+    """
+    keywords = _extract_keywords_kiwi(text)
+    if keywords:
+        return keywords
+    return _extract_keywords_fallback(text)
 
 def _save_context_sticky(chat_id: str, source: str, original_query: str, doc_title: str = "") -> None:
     """Clarification 선택 후 컨텍스트 저장"""
@@ -785,12 +837,36 @@ def _clear_context_sticky(chat_id: str) -> None:
     if chat_id in _CONTEXT_STICKY:
         del _CONTEXT_STICKY[chat_id]
 
+def _has_pronoun_reference(query: str) -> bool:
+    """쿼리에 지시 대명사가 포함되어 있는지 확인 (문서 연속성 암시)"""
+    words = re.findall(r"[가-힣]+", query)
+    for w in words:
+        if _PRONOUN_PATTERNS.match(w):
+            return True
+    return False
+
+
 def _check_keyword_overlap(query: str, ctx_keywords: list[str]) -> bool:
-    """쿼리와 컨텍스트 키워드 간 겹침 확인"""
+    """
+    하이브리드 키워드 겹침 확인:
+    1. kiwipiepy로 추출한 키워드 간 교집합 확인
+    2. 키워드 없지만 대명사("그거", "이거" 등) 포함시 연속성 추정
+    """
     query_kw = set(_extract_keywords_simple(query))
     ctx_kw = set(ctx_keywords)
     overlap = query_kw & ctx_kw
-    return len(overlap) >= 1  # 1개 이상 겹치면 True
+
+    # 키워드 겹침 있으면 True
+    if len(overlap) >= 1:
+        _dbg(f"keyword_overlap: found {overlap}")
+        return True
+
+    # 키워드 겹침 없지만 대명사가 있으면 연속성 추정
+    if _has_pronoun_reference(query):
+        _dbg(f"keyword_overlap: no keyword match but pronoun detected in '{query}'")
+        return True
+
+    return False
 
 def _detect_followup_type(query: str, ctx: dict) -> str:
     """
