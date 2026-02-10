@@ -2387,7 +2387,26 @@ async def query(payload: dict = Body(...)):
                 }
         if mcp_results and not _mcp_results_have_text(mcp_results):
             log.info("MCP results missing text: q=%r page_id=%s", q, forced_page_id)
-            mcp_results = []
+            # [FIX] 페이지 본문이 비어있으면, 제목으로 다시 검색 (컨테이너 페이지 → 하위 페이지 검색)
+            parent_title = (mcp_results[0].get("title") or "").strip() if mcp_results else ""
+            if parent_title and len(parent_title) >= 2:
+                log.info("MCP fallback: searching by parent title: %r", parent_title)
+                fallback_results = await _mcp_search_fast(
+                    parent_title, forced_page_id=None, spaces_for_mcp=spaces_for_mcp
+                )
+                # 원래 페이지는 제외하고 하위/관련 페이지만 사용
+                if fallback_results:
+                    fallback_results = [
+                        r for r in fallback_results
+                        if str(r.get("id") or "") != forced_page_id
+                    ]
+                if fallback_results and _mcp_results_have_text(fallback_results):
+                    log.info("MCP fallback found %d child/related pages", len(fallback_results))
+                    mcp_results = fallback_results
+                else:
+                    mcp_results = []
+            else:
+                mcp_results = []
 
         # sticky 처리
         if mcp_results and STICKY_AFTER_MCP:
