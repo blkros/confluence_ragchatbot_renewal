@@ -2708,11 +2708,13 @@ async def chat(req: ChatReq):
 
             # [ADD] RAG 응답 성공시 context_sticky 저장 (후속 질문 컨텍스트 유지)
             if ctx_label in ("로컬 문서(RAG)", "Confluence(RAG)", "RAG") and chat_id:
-                # source URL 또는 file_hint_src 저장
+                # source URL 또는 file_hint_src 저장, 없으면 "local" 사용
                 sticky_src = (qa_urls[0] if qa_urls else "") or file_hint_src or ""
-                if sticky_src:
-                    _save_context_sticky(chat_id, sticky_src, clean_user_msg)
-                    _dbg(f"rag_success_sticky_save: chat_id={chat_id} src='{sticky_src[:60]}'")
+                # 로컬 문서는 URL이 없을 수 있으므로, source 없어도 키워드 기반 저장
+                if not sticky_src:
+                    sticky_src = "local://rag-context"  # 플레이스홀더
+                _save_context_sticky(chat_id, sticky_src, clean_user_msg)
+                _dbg(f"rag_success_sticky_save: chat_id={chat_id} src='{sticky_src[:60]}'")
 
         return _attach_trace({
             "id": f"cmpl-{uuid.uuid4()}",
@@ -3177,9 +3179,11 @@ async def chat(req: ChatReq):
         # [ADD] RAG 응답 성공시 context_sticky 저장 (후속 질문 컨텍스트 유지)
         if ctx_label in ("로컬 문서(RAG)", "Confluence(RAG)", "RAG") and chat_id:
             sticky_src = (src_urls[0] if src_urls else "") or file_hint_src or ""
-            if sticky_src:
-                _save_context_sticky(chat_id, sticky_src, clean_user_msg)
-                _dbg(f"rag_success_sticky_save_query: chat_id={chat_id} src='{sticky_src[:60]}'")
+            # 로컬 문서는 URL이 없을 수 있으므로, source 없어도 키워드 기반 저장
+            if not sticky_src:
+                sticky_src = "local://rag-context"
+            _save_context_sticky(chat_id, sticky_src, clean_user_msg)
+            _dbg(f"rag_success_sticky_save_query: chat_id={chat_id} src='{sticky_src[:60]}'")
 
     return _attach_trace({
         "id": f"cmpl-{uuid.uuid4()}",
