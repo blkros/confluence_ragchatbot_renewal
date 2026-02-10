@@ -22,6 +22,25 @@ TZ = os.getenv("ROUTER_TZ", "Asia/Seoul")
 # key: session_id (trace_id 사용), value: {"candidates": [...], "timestamp": float}
 _CLARIFICATION_SESSIONS = {}
 _CLARIFICATION_TIMEOUT = 300  # 5분
+
+# [ADD] 컨텍스트 연속성 저장 (clarification 선택 후 후속 질문용)
+# key: chat_id, value: {"source": str, "topic": str, "keywords": list, "timestamp": float}
+_CONTEXT_STICKY = {}
+_CONTEXT_STICKY_TIMEOUT = 180  # 3분
+_CONTEXT_STICKY_TURNS = 3  # 최대 3턴까지 유지
+
+# 후속 질문 패턴 (명확하게 문서 참조)
+_FOLLOWUP_DOC_PATTERNS = re.compile(
+    r"(이\s*문서|위\s*내용|방금|아까|해당\s*문서|선택한|그\s*문서|"
+    r"세미나에서|보고서에서|자료에서|파일에서|위에서)",
+    re.I
+)
+# 일반 지식 요청 패턴
+_FOLLOWUP_GENERAL_PATTERNS = re.compile(
+    r"(일반적으로|보통|란\s*무엇|이란\s*무엇|[은는이가]\s*뭐야|[은는이가]\s*뭔가요|"
+    r"개념이|정의가|기본적으로)",
+    re.I
+)
 _NUM_ONLY_LINE = re.compile(r'(?m)^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
 _FILE_HINT_RE = re.compile(
     r"(?:file|document|docx|doc|word|pdf|pptx|ppt|xlsx|excel|csv|sheet|slide|"
@@ -707,6 +726,105 @@ def _get_clarification_choice(session_id: str, choice_num: int) -> str | None:
         return src
     _dbg(f"clrf_get: choice_num {choice_num} out of range (1-{len(candidates)})")
     return None
+
+# === 컨텍스트 연속성 (후속 질문 처리) ===
+
+def _extract_keywords_simple(text: str) -> list[str]:
+    """간단한 키워드 추출 (한글 2자 이상, 영문 2자 이상)"""
+    # 불용어
+    stops = {"에서", "으로", "하고", "해서", "대해", "대한", "관련", "내용", "설명", "요약", "자세히", "더", "좀"}
+    words = re.findall(r"[가-힣]{2,}|[a-zA-Z]{2,}", text)
+    return [w.lower() for w in words if w.lower() not in stops]
+
+def _save_context_sticky(chat_id: str, source: str, original_query: str, doc_title: str = "") -> None:
+    """Clarification 선택 후 컨텍스트 저장"""
+    keywords = _extract_keywords_simple(original_query)
+    if doc_title:
+        keywords.extend(_extract_keywords_simple(doc_title))
+    keywords = list(set(keywords))  # 중복 제거
+
+    _CONTEXT_STICKY[chat_id] = {
+        "source": source,
+        "topic": original_query,
+        "doc_title": doc_title,
+        "keywords": keywords,
+        "timestamp": time.time(),
+        "turns": 0
+    }
+    _dbg(f"context_sticky_save: chat_id={chat_id} keywords={keywords[:5]}")
+
+    # 오래된 세션 정리
+    now = time.time()
+    expired = [k for k, v in _CONTEXT_STICKY.items()
+               if now - v["timestamp"] > _CONTEXT_STICKY_TIMEOUT]
+    for k in expired:
+        del _CONTEXT_STICKY[k]
+
+def _get_context_sticky(chat_id: str) -> dict | None:
+    """저장된 컨텍스트 반환 (없거나 만료되면 None)"""
+    ctx = _CONTEXT_STICKY.get(chat_id)
+    if not ctx:
+        return None
+    # 시간 초과 체크
+    if time.time() - ctx["timestamp"] > _CONTEXT_STICKY_TIMEOUT:
+        del _CONTEXT_STICKY[chat_id]
+        return None
+    # 턴 수 체크
+    if ctx["turns"] >= _CONTEXT_STICKY_TURNS:
+        del _CONTEXT_STICKY[chat_id]
+        return None
+    return ctx
+
+def _increment_context_sticky_turn(chat_id: str) -> None:
+    """컨텍스트 턴 카운트 증가"""
+    if chat_id in _CONTEXT_STICKY:
+        _CONTEXT_STICKY[chat_id]["turns"] += 1
+
+def _clear_context_sticky(chat_id: str) -> None:
+    """컨텍스트 명시적 클리어"""
+    if chat_id in _CONTEXT_STICKY:
+        del _CONTEXT_STICKY[chat_id]
+
+def _check_keyword_overlap(query: str, ctx_keywords: list[str]) -> bool:
+    """쿼리와 컨텍스트 키워드 간 겹침 확인"""
+    query_kw = set(_extract_keywords_simple(query))
+    ctx_kw = set(ctx_keywords)
+    overlap = query_kw & ctx_kw
+    return len(overlap) >= 1  # 1개 이상 겹치면 True
+
+def _detect_followup_type(query: str, ctx: dict) -> str:
+    """
+    후속 질문 타입 감지
+    Returns: "document" | "general" | "ambiguous" | "unrelated"
+    """
+    # 명확하게 문서 참조
+    if _FOLLOWUP_DOC_PATTERNS.search(query):
+        return "document"
+    # 명확하게 일반 지식 요청
+    if _FOLLOWUP_GENERAL_PATTERNS.search(query):
+        return "general"
+    # 키워드 겹침 확인
+    if _check_keyword_overlap(query, ctx.get("keywords", [])):
+        return "ambiguous"  # 키워드는 겹치지만 의도 불명확
+    return "unrelated"  # 완전히 다른 주제
+
+def _format_followup_clarification(query: str, ctx: dict) -> str:
+    """후속 질문 명확화 메시지 포맷"""
+    doc_title = ctx.get("doc_title") or ctx.get("topic", "이전 문서")
+    # 문서 제목 축약
+    if len(doc_title) > 30:
+        doc_title = doc_title[:27] + "..."
+
+    lines = [
+        f"이전에 선택하신 **{doc_title}** 문서를 기반으로 답변할까요?",
+        "",
+        "**1.** 네, 문서 기반으로 (RAG)",
+        "**2.** 아니요, 일반 지식으로 (LLM)",
+        "",
+        "---",
+        "💡 **원하시는 번호를 입력해주세요** (예: `1`, `2`)"
+    ]
+    return "\n".join(lines)
 
 def _format_clarification_message(candidates: list, message: str) -> str:
     """후보 목록을 마크다운 형식으로 포맷 (CLRF 데이터는 맨 끝에 HTML 주석으로 숨김)"""
@@ -1924,6 +2042,31 @@ async def chat(req: ChatReq):
     if file_hint_src:
         _dbg(f"file_hint_src: src='{file_hint_src}'")
 
+    # [ADD] 후속 질문 Clarification 응답 처리 (1=문서, 2=일반)
+    # 이전 메시지가 후속 질문 clarification이고 사용자가 1 또는 2를 입력한 경우
+    if prev_assistant_msg and "문서를 기반으로 답변할까요?" in prev_assistant_msg:
+        is_followup_choice, followup_num = _is_number_choice(clean_user_msg)
+        if is_followup_choice and followup_num in (1, 2):
+            ctx_sticky = _get_context_sticky(chat_id)
+            pending_query = ctx_sticky.get("pending_query", prev_user_msg) if ctx_sticky else prev_user_msg
+            _dbg(f"followup_choice: num={followup_num} pending_query='{pending_query[:50] if pending_query else 'None'}'")
+
+            if followup_num == 1 and ctx_sticky:
+                # 문서 기반 선택 → sticky source 사용
+                file_hint_src = ctx_sticky["source"]
+                file_hint = True
+                clean_user_msg = pending_query or clean_user_msg
+                if not _LOCAL_SRC_RE.search(file_hint_src):
+                    force_mcp = True
+                    page_id = _extract_page_id(file_hint_src) or page_id
+                _increment_context_sticky_turn(chat_id)
+                _dbg(f"followup_choice_document: source='{file_hint_src[:50]}...' query='{clean_user_msg[:50]}'")
+            else:
+                # 일반 지식 선택 → 컨텍스트 클리어하고 LLM 사용
+                _clear_context_sticky(chat_id)
+                clean_user_msg = pending_query or clean_user_msg
+                _dbg(f"followup_choice_general: cleared context, query='{clean_user_msg[:50]}'")
+
     # [ADD] Clarification 번호 선택 처리
     # 사용자가 숫자만 입력하면 이전 질문으로 다시 clarification 요청해서 source 가져옴
     clarification_choice_src = None
@@ -1999,8 +2142,58 @@ async def chat(req: ChatReq):
                             _dbg(f"clarification_choice_rewrite: q='{rewrite_q}'")
                     except Exception:
                         pass
+            # [ADD] 컨텍스트 스티키 저장 (후속 질문 처리용)
+            _save_context_sticky(chat_id, clarification_choice_src, prev_user_msg or clean_user_msg)
+            _dbg(f"context_sticky_saved: chat_id={chat_id} src='{clarification_choice_src[:50]}...'")
         else:
             _dbg(f"clarification_choice: invalid choice={choice_num}")
+
+    # [ADD] === 후속 질문 컨텍스트 확인 ===
+    # clarification 선택이 아니고, 이전에 선택한 문서 컨텍스트가 있으면 후속 질문 타입 확인
+    if not is_choice and not has_explicit_upload:
+        ctx_sticky = _get_context_sticky(chat_id)
+        if ctx_sticky:
+            followup_type = _detect_followup_type(clean_user_msg, ctx_sticky)
+            _dbg(f"followup_detect: chat_id={chat_id} type={followup_type} query='{clean_user_msg[:50]}'")
+
+            if followup_type == "document":
+                # 명확하게 문서 참조 → 이전 소스 사용
+                file_hint_src = ctx_sticky["source"]
+                file_hint = True
+                if not _LOCAL_SRC_RE.search(file_hint_src):
+                    force_mcp = True
+                    page_id = _extract_page_id(file_hint_src) or page_id
+                _increment_context_sticky_turn(chat_id)
+                _dbg(f"followup_document: using sticky source='{file_hint_src[:50]}...'")
+
+            elif followup_type == "general":
+                # 명확하게 일반 지식 요청 → 컨텍스트 클리어
+                _clear_context_sticky(chat_id)
+                _dbg(f"followup_general: cleared context, using LLM")
+
+            elif followup_type == "ambiguous":
+                # 모호함 → 사용자에게 확인 요청
+                content = _format_followup_clarification(clean_user_msg, ctx_sticky)
+                _dbg(f"followup_ambiguous: asking user for clarification")
+                # 임시로 컨텍스트에 현재 쿼리 저장 (1 또는 2 선택시 사용)
+                ctx_sticky["pending_query"] = clean_user_msg
+                return _attach_trace({
+                    "id": f"cmpl-{uuid.uuid4()}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": req.model,
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop"
+                    }],
+                }, trace_id)
+
+            else:  # unrelated
+                # 완전히 다른 주제 → 컨텍스트 클리어
+                _clear_context_sticky(chat_id)
+                _dbg(f"followup_unrelated: cleared context")
+
     # [ADD] === Clarification 체크 (inferred_src 전에 먼저 실행) ===
     # clarification_choice가 없고, 메타태스크가 아니고, 명시적 파일 첨부가 아니면 clarification 체크
     # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵 (has_explicit_upload는 상단에서 정의됨)
