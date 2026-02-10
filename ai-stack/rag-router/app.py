@@ -678,6 +678,8 @@ def _is_number_choice(text: str) -> tuple[bool, int]:
 
 def _save_clarification(session_id: str, candidates: list) -> None:
     """Clarification 후보 목록을 세션에 저장"""
+    sources = [c.get("source", "")[:50] for c in candidates[:3]]  # 디버그용
+    _dbg(f"clrf_save: session_id={session_id} count={len(candidates)} sources={sources}")
     _CLARIFICATION_SESSIONS[session_id] = {
         "candidates": candidates,
         "timestamp": time.time()
@@ -688,15 +690,22 @@ def _save_clarification(session_id: str, candidates: list) -> None:
                if now - v["timestamp"] > _CLARIFICATION_TIMEOUT]
     for k in expired:
         del _CLARIFICATION_SESSIONS[k]
+    _dbg(f"clrf_save: total_sessions={len(_CLARIFICATION_SESSIONS)}")
 
 def _get_clarification_choice(session_id: str, choice_num: int) -> str | None:
     """세션에 저장된 후보 중 choice_num번째의 source 반환"""
+    _dbg(f"clrf_get: session_id={session_id} choice={choice_num} sessions_keys={list(_CLARIFICATION_SESSIONS.keys())[:5]}")
     session = _CLARIFICATION_SESSIONS.get(session_id)
     if not session:
+        _dbg(f"clrf_get: session NOT FOUND for {session_id}")
         return None
     candidates = session.get("candidates", [])
+    _dbg(f"clrf_get: found session with {len(candidates)} candidates")
     if 1 <= choice_num <= len(candidates):
-        return candidates[choice_num - 1].get("source")
+        src = candidates[choice_num - 1].get("source")
+        _dbg(f"clrf_get: returning source={src[:50] if src else 'None'}...")
+        return src
+    _dbg(f"clrf_get: choice_num {choice_num} out of range (1-{len(candidates)})")
     return None
 
 def _format_clarification_message(candidates: list, message: str) -> str:
@@ -728,9 +737,16 @@ def _format_clarification_message(candidates: list, message: str) -> str:
     lines.append("---")
     lines.append("💡 **원하시는 문서 번호를 입력해주세요** (예: `1`, `2`, `3`)")
 
-    # CLRF 데이터를 맨 끝에 마크다운 주석 형식으로 숨김 (대부분의 렌더러에서 안 보임)
+    # [FIX] CLRF 데이터를 여러 형식으로 저장 (Open WebUI가 일부 형식을 제거할 수 있음)
     import json
-    lines.append(f"\n[//]: # (CLRF:{json.dumps(clrf_data)})")
+    clrf_json = json.dumps(clrf_data, ensure_ascii=False)
+    # 1) 마크다운 주석 형식
+    lines.append(f"\n[//]: # (CLRF:{clrf_json})")
+    # 2) HTML 주석 형식 (백업)
+    lines.append(f"<!--CLRF_DATA:{clrf_json}-->")
+    # 3) 숨겨진 span 형식 (또 다른 백업)
+    for cid, src in clrf_data.items():
+        lines.append(f'<span style="display:none">CLRF:{cid}|{src}</span>')
 
     return "\n".join(lines)
 
@@ -738,46 +754,57 @@ def _format_clarification_message(candidates: list, message: str) -> str:
 def _extract_clarification_source_from_history(prev_assistant: str, choice_num: int) -> str | None:
     """이전 assistant 메시지에서 선택한 번호에 해당하는 source 추출"""
     if not prev_assistant:
+        _dbg("clrf_extract: prev_assistant is empty")
         return None
 
+    _dbg(f"clrf_extract: looking for choice={choice_num} in msg_len={len(prev_assistant)}")
+
     # 1) 마크다운 주석 형식: [//]: # (CLRF:{"1": "/path", "2": "/path"})
-    md_pattern = r'\[//\]: # \(CLRF:(\{[^)]+\})\)'
-    md_match = re.search(md_pattern, prev_assistant)
+    # 더 robust한 패턴 - JSON 전체를 캡처
+    md_pattern = r'\[//\]: # \(CLRF:(\{.*?\})\)'
+    md_match = re.search(md_pattern, prev_assistant, re.DOTALL)
     if md_match:
         try:
             import json
             clrf_data = json.loads(md_match.group(1))
             source = clrf_data.get(str(choice_num)) or clrf_data.get(choice_num)
             if source:
+                _dbg(f"clrf_extract: found via markdown comment: {source[:50]}...")
                 return source
-        except (json.JSONDecodeError, KeyError):
-            pass
+        except (json.JSONDecodeError, KeyError) as e:
+            _dbg(f"clrf_extract: markdown parse failed: {e}")
 
     # 2) HTML 주석 형식: <!--CLRF_DATA:{"1": "/path", "2": "/path"}-->
-    json_pattern = r'<!--CLRF_DATA:(\{[^}]+\})-->'
-    json_match = re.search(json_pattern, prev_assistant)
+    json_pattern = r'<!--CLRF_DATA:(\{.*?\})-->'
+    json_match = re.search(json_pattern, prev_assistant, re.DOTALL)
     if json_match:
         try:
             import json
             clrf_data = json.loads(json_match.group(1))
             source = clrf_data.get(str(choice_num)) or clrf_data.get(choice_num)
             if source:
+                _dbg(f"clrf_extract: found via HTML comment: {source[:50]}...")
                 return source
-        except (json.JSONDecodeError, KeyError):
-            pass
+        except (json.JSONDecodeError, KeyError) as e:
+            _dbg(f"clrf_extract: HTML comment parse failed: {e}")
 
-    # 3) fallback: 숨김 span 형식
-    pattern = rf'<span[^>]*>CLRF:{choice_num}\|([^<]+)</span>'
+    # 3) fallback: 숨김 span 형식 - CLRF:1|url
+    pattern = rf'CLRF:{choice_num}\|([^\s<]+)'
     match = re.search(pattern, prev_assistant)
     if match:
-        return match.group(1)
+        source = match.group(1)
+        _dbg(f"clrf_extract: found via span: {source[:50]}...")
+        return source
 
     # 4) fallback: 기존 HTML 주석 형식
     pattern_legacy = rf'<!--CLRF:{choice_num}\|([^>]+)-->'
     match_legacy = re.search(pattern_legacy, prev_assistant)
     if match_legacy:
-        return match_legacy.group(1)
+        source = match_legacy.group(1)
+        _dbg(f"clrf_extract: found via legacy HTML: {source[:50]}...")
+        return source
 
+    _dbg(f"clrf_extract: NOT FOUND in any format, msg preview: ...{prev_assistant[-200:]}")
     return None
 
 
@@ -787,6 +814,12 @@ def _is_clarification_response(text: str) -> bool:
         return False
     # 마크다운 주석 형식: [//]: # (CLRF:...)
     if "[//]: # (CLRF:" in text:
+        return True
+    # HTML 주석 형식: <!--CLRF_DATA:...-->
+    if "<!--CLRF_DATA:" in text:
+        return True
+    # span 형식: CLRF:1|
+    if re.search(r'CLRF:\d+\|', text):
         return True
     # HTML 주석 형식: <!--CLRF_DATA:...-->
     if "<!--CLRF_DATA:" in text:
@@ -1793,7 +1826,7 @@ async def chat(req: ChatReq):
     # [FIX] chat_id를 세션 키로 사용 (매 요청마다 동일)
     metadata = req.metadata or {}
     chat_id = metadata.get("chat_id") or trace_id  # chat_id가 없으면 trace_id 사용
-    _dbg(f"session_key: chat_id={chat_id} trace_id={trace_id}")
+    _dbg(f"session_key: chat_id={chat_id} trace_id={trace_id} metadata_keys={list(metadata.keys())}")
 
     # [ADD] === 맨 앞에서 Clarification 체크 (모든 로직 전에) ===
     # 메타태스크가 아니고, 모호한 키워드가 있으면 clarification 체크
