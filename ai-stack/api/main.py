@@ -2387,25 +2387,45 @@ async def query(payload: dict = Body(...)):
                 }
         if mcp_results and not _mcp_results_have_text(mcp_results):
             log.info("MCP results missing text: q=%r page_id=%s", q, forced_page_id)
-            # [FIX] 페이지 본문이 비어있으면, 제목으로 다시 검색 (컨테이너 페이지 → 하위 페이지 검색)
+            # [FIX] 페이지 본문이 비어있으면, 여러 방법으로 하위/관련 페이지 검색
             parent_title = (mcp_results[0].get("title") or "").strip() if mcp_results else ""
-            if parent_title and len(parent_title) >= 2:
-                log.info("MCP fallback: searching by parent title: %r", parent_title)
+            fallback_results = []
+
+            # 1) 먼저 원본 쿼리로 검색 (예: "배홍진 최근 7일 일일업무보고")
+            if q and len(q) >= 2:
+                log.info("MCP fallback 1: searching by original query: %r", q)
                 fallback_results = await _mcp_search_fast(
-                    parent_title, forced_page_id=None, spaces_for_mcp=spaces_for_mcp
+                    q, forced_page_id=None, spaces_for_mcp=spaces_for_mcp
                 )
-                # 원래 페이지는 제외하고 하위/관련 페이지만 사용
+                # 원래 페이지는 제외
                 if fallback_results:
                     fallback_results = [
                         r for r in fallback_results
-                        if str(r.get("id") or "") != forced_page_id
+                        if str(r.get("id") or "") != forced_page_id and _mcp_results_have_text([r])
                     ]
-                if fallback_results and _mcp_results_have_text(fallback_results):
-                    log.info("MCP fallback found %d child/related pages", len(fallback_results))
-                    mcp_results = fallback_results
-                else:
-                    mcp_results = []
+
+            # 2) 원본 쿼리로 못 찾으면 제목에서 핵심 키워드 추출하여 검색
+            if not fallback_results and parent_title and len(parent_title) >= 2:
+                # "배홍진 - 2026년 02월" -> "배홍진" 추출
+                import re
+                name_match = re.match(r'^([가-힣a-zA-Z]+)', parent_title)
+                search_term = name_match.group(1) if name_match else parent_title
+                log.info("MCP fallback 2: searching by extracted name: %r from title %r", search_term, parent_title)
+                fallback_results = await _mcp_search_fast(
+                    search_term, forced_page_id=None, spaces_for_mcp=spaces_for_mcp
+                )
+                # 원래 페이지는 제외하고 텍스트 있는 것만
+                if fallback_results:
+                    fallback_results = [
+                        r for r in fallback_results
+                        if str(r.get("id") or "") != forced_page_id and _mcp_results_have_text([r])
+                    ]
+
+            if fallback_results:
+                log.info("MCP fallback found %d child/related pages", len(fallback_results))
+                mcp_results = fallback_results[:5]  # 상위 5개만
             else:
+                log.info("MCP fallback: no results found")
                 mcp_results = []
 
         # sticky 처리

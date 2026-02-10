@@ -737,16 +737,8 @@ def _format_clarification_message(candidates: list, message: str) -> str:
     lines.append("---")
     lines.append("💡 **원하시는 문서 번호를 입력해주세요** (예: `1`, `2`, `3`)")
 
-    # [FIX] CLRF 데이터를 여러 형식으로 저장 (Open WebUI가 일부 형식을 제거할 수 있음)
-    import json
-    clrf_json = json.dumps(clrf_data, ensure_ascii=False)
-    # 1) 마크다운 주석 형식
-    lines.append(f"\n[//]: # (CLRF:{clrf_json})")
-    # 2) HTML 주석 형식 (백업)
-    lines.append(f"<!--CLRF_DATA:{clrf_json}-->")
-    # 3) 숨겨진 span 형식 (또 다른 백업)
-    for cid, src in clrf_data.items():
-        lines.append(f'<span style="display:none">CLRF:{cid}|{src}</span>')
+    # [FIX] CLRF 데이터는 메시지에 포함하지 않음 (Open WebUI가 HTML을 escape하여 노출됨)
+    # 세션 저장만 사용 (_save_clarification에서 처리)
 
     return "\n".join(lines)
 
