@@ -5,7 +5,7 @@ import os
 import requests
 from typing import List
 
-BASE = os.getenv("OPENAI_BASE_URL", "").rstrip("/")  # 예: http://172.16.10.168:9993/v1
+BASE = os.getenv("OPENAI_BASE_URL", "").rstrip("/")  # 예: http://172.16.10.173:9993/v1
 KEY = os.getenv("OPENAI_API_KEY", "local-anything")
 MODEL = os.getenv("OPENAI_MODEL", "qwen3-30b-a3b-fp8")
 TEMP = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))

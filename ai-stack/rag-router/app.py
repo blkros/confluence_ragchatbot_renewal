@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from functools import lru_cache
 
 RAG = os.getenv("RAG_PROXY_URL", "http://rag-proxy:8080")
-OPENAI = os.getenv("OPENAI_URL", "http://172.16.10.168:9993/v1")
+OPENAI = os.getenv("OPENAI_URL", "http://172.16.10.173:9993/v1")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "/model/Qwen2.5-14B-Instruct")
 ROUTER_MODEL_ID = os.getenv("ROUTER_MODEL_ID", "qwen3-30b-a3b-fp8-router")
