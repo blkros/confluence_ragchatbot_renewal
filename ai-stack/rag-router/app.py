@@ -2919,24 +2919,54 @@ async def chat(req: ChatReq):
             # "첨부" 등이 있으면 clarification 스킵 (has_explicit_upload는 상단에서 정의됨)
             for qj in (j1, j2):
                 # [ADD] Clarification 응답 처리 (파일 업로드 힌트가 있으면 스킵)
-                if qj.get("clarification_needed") and not has_explicit_upload:
+                if qj.get("clarification_needed"):
                     candidates = qj.get("candidates", [])
-                    message = qj.get("message", "문서를 선택해주세요.")
-                    if candidates:
-                        _save_clarification(chat_id, candidates)
-                        content = _format_clarification_message(candidates, message)
-                        _dbg(f"clarification: trace_id={trace_id} candidates={len(candidates)}")
-                        return _attach_trace({
-                            "id": f"cmpl-{uuid.uuid4()}",
-                            "object": "chat.completion",
-                            "created": int(time.time()),
-                            "model": req.model,
-                            "choices": [{
-                                "index": 0,
-                                "message": {"role": "assistant", "content": content},
-                                "finish_reason": "stop"
-                            }],
-                        }, trace_id)
+                    # [FIX] has_explicit_upload=True이고 clarification이 반환되면 첫 번째 candidate 자동 선택
+                    if has_explicit_upload and candidates:
+                        first_src = candidates[0].get("source", "")
+                        if first_src and _LOCAL_SRC_RE.search(first_src):
+                            # 첫 번째 로컬 candidate를 file_hint_src로 사용하여 다시 query
+                            _dbg(f"clarification_auto_select: has_explicit_upload=True, auto_src='{first_src}'")
+                            try:
+                                auto_payload = {"question": v, "k": 10, "sticky": True, "source": first_src}
+                                if spaces_hint:
+                                    auto_payload["spaces"] = spaces_hint
+                                _add_trace(auto_payload, trace_id)
+                                auto_resp = await client.post(f"{RAG}/query", json=auto_payload)
+                                if auto_resp.status_code == 200:
+                                    auto_json = auto_resp.json()
+                                    auto_items = auto_json.get("items") or auto_json.get("contexts") or []
+                                    if auto_items:
+                                        _dbg(f"clarification_auto_success: items={len(auto_items)}")
+                                        # 자동 선택된 결과로 qj 교체
+                                        qj = auto_json
+                                        # file_hint_src 업데이트
+                                        file_hint_src = first_src
+                            except Exception as e:
+                                _dbg(f"clarification_auto_error: {e}")
+                        # 자동 선택 실패 시 clarification 스킵 (continue)
+                        if qj.get("clarification_needed"):
+                            continue
+                    elif not has_explicit_upload:
+                        message = qj.get("message", "문서를 선택해주세요.")
+                        if candidates:
+                            _save_clarification(chat_id, candidates)
+                            content = _format_clarification_message(candidates, message)
+                            _dbg(f"clarification: trace_id={trace_id} candidates={len(candidates)}")
+                            return _attach_trace({
+                                "id": f"cmpl-{uuid.uuid4()}",
+                                "object": "chat.completion",
+                                "created": int(time.time()),
+                                "model": req.model,
+                                "choices": [{
+                                    "index": 0,
+                                    "message": {"role": "assistant", "content": content},
+                                    "finish_reason": "stop"
+                                }],
+                            }, trace_id)
+                    else:
+                        # has_explicit_upload=True이지만 candidate 없음 - 스킵
+                        continue
 
                 direct_answer = (qj.get("direct_answer") or "").strip()
                 if direct_answer:
