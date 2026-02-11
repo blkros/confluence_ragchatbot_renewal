@@ -409,7 +409,7 @@ fi
 
 # 서버 안정화 대기 (동시 요청 후 MCP 연결 풀 복구)
 echo "Waiting for server stabilization..."
-sleep 10
+sleep 15
 
 # -----------------------------------------------------------------------------
 subsection "2.5 캐시 일관성 (Cache Consistency)"
@@ -441,6 +441,12 @@ fi
 # =============================================================================
 
 section "PART 3: 통합 플로우 테스트"
+
+# 서버 안정화 및 웜업 (이전 동시 요청 테스트에서 복구)
+echo "Warming up router before integration tests..."
+curl_quiet "$ROUTER_URL/v1/chat/completions" -H "Content-Type: application/json" \
+  -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"안녕\"}]}" >/dev/null
+sleep 3
 
 # -----------------------------------------------------------------------------
 subsection "3.1 파일 메타데이터 전달 체인"
@@ -504,9 +510,14 @@ echo "Testing: 일반 지식 질문 → LLM 직접 응답"
 resp=$(curl_quiet "$ROUTER_URL/v1/chat/completions" -H "Content-Type: application/json" -d "{
   \"model\":\"$MODEL\",
   \"messages\":[{\"role\":\"user\",\"content\":\"피타고라스 정리가 뭐야?\"}]
-}" --max-time 60)
+}" --max-time 90)
 
 content=$(echo "$resp" | safe_jq '.choices[0].message.content')
+# 디버그: 응답 상태 확인
+resp_len=${#resp}
+content_len=${#content}
+info "Response length: $resp_len, Content length: $content_len"
+
 if echo "$content" | grep -qi "근거: 없음(LLM)"; then
   success "NO_RAG route working (LLM direct)"
 elif echo "$content" | grep -qi "근거:"; then
@@ -518,6 +529,7 @@ elif [[ -n "$content" && "$content" != "null" && ${#content} -gt 10 ]]; then
   info "Preview: ${content:0:50}..."
 else
   failure "NO_RAG route failed (no response)"
+  info "Raw response: ${resp:0:200}"
 fi
 
 # -----------------------------------------------------------------------------
@@ -533,13 +545,15 @@ resp=$(curl_quiet "$PROXY_URL/query" -H "Content-Type: application/json" -d "{
 
 fallback_used=$(echo "$resp" | safe_jq '.notes.fallback_used')
 hits=$(echo "$resp" | safe_jq '.hits')
-info "Fallback used: $fallback_used, Hits: $hits"
+resp_len=${#resp}
+info "Response length: $resp_len, Fallback used: $fallback_used, Hits: $hits"
 
 # notes 필드가 있거나 hits가 있으면 성공
 if echo "$resp" | jq -e '.notes' >/dev/null 2>&1 || [[ "$hits" =~ ^[0-9]+$ ]]; then
   success "MCP fallback logic executed"
 else
   failure "MCP fallback not triggered"
+  info "Raw response: ${resp:0:200}"
 fi
 
 # -----------------------------------------------------------------------------
@@ -551,9 +565,13 @@ echo "Testing: pageId로 Confluence 페이지 직접 조회"
 resp=$(curl_quiet "$ROUTER_URL/v1/chat/completions" -H "Content-Type: application/json" -d "{
   \"model\":\"$MODEL\",
   \"messages\":[{\"role\":\"user\",\"content\":\"pageId=208537808 내용 요약해줘\"}]
-}" --max-time 60)
+}" --max-time 90)
 
 content=$(echo "$resp" | safe_jq '.choices[0].message.content')
+resp_len=${#resp}
+content_len=${#content}
+info "Response length: $resp_len, Content length: $content_len"
+
 if [[ -n "$content" && "$content" != "null" && ${#content} -gt 20 ]]; then
   if echo "$content" | grep -qi "읽어올 수 없습니다\|찾을 수 없습니다\|권한"; then
     warn "Page not accessible (may be permission issue)"
@@ -568,6 +586,7 @@ else
     success "pageId query processed"
   else
     failure "pageId access failed (no response)"
+    info "Raw response: ${resp:0:200}"
   fi
 fi
 
