@@ -89,9 +89,9 @@ safe_jq() {
   jq -r "$1" 2>/dev/null || echo ""
 }
 
-# curl with timeout
+# curl with timeout (increased for CPU embedding ~17s + MCP fallback)
 curl_quiet() {
-  curl -s --max-time 30 "$@" 2>/dev/null || echo "{}"
+  curl -s --max-time 90 "$@" 2>/dev/null || echo "{}"
 }
 
 # =============================================================================
