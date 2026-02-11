@@ -74,8 +74,8 @@ services:
       ROUTER_MIN_OVERLAP: "0.08"
       ROUTER_VARIANTS_MAX: "1"
       CONFLUENCE_SPACE: "${CONFLUENCE_SPACE:-}"
-      ROUTER_PRECHECK_TIMEOUT: "30"
-      ROUTER_LLM_ROUTE_TIMEOUT: "10"
+      ROUTER_PRECHECK_TIMEOUT: "60"
+      ROUTER_LLM_ROUTE_TIMEOUT: "15"
     depends_on:
       - rag-proxy
     networks:
