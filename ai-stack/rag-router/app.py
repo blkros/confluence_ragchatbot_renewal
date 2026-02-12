@@ -1770,10 +1770,16 @@ async def _limited_messages(messages) -> list[dict]:
     others = [m for m in msgs if m.get("role") != "system"]
     if not others:
         return system[:1] if system else []
-    # ROUTER_KEEP_HISTORY=0: 이전 assistant 메시지 제거 (RAG 컨텍스트 오염 방지)
-    # 현재 user 메시지만 유지하여 이전 턴의 RAG 답변이 새 답변에 영향주지 않게 함
+    # ROUTER_KEEP_HISTORY=0: 마지막 user 메시지만 유지 (대화 히스토리 오염 방지)
+    # 이전 턴의 RAG 답변과 이전 질문이 새 답변에 영향주지 않게 함
     if not ROUTER_KEEP_HISTORY:
-        others = [m for m in others if m.get("role") == "user"]
+        # 마지막 user 메시지만 추출
+        last_user = None
+        for m in reversed(others):
+            if m.get("role") == "user":
+                last_user = m
+                break
+        others = [last_user] if last_user else []
     budget = max(0, ROUTER_USER_MAX_CHARS)
     total = 0
     keep = []
