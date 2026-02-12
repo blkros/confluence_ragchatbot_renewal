@@ -1099,7 +1099,12 @@ _TOK_RE = re.compile(r"[A-Za-z0-9가-힣]{2,}")
 # 불용구/공손표현 꼬리 자르기 + 분절
 _STOP_SUFFIX_RE = re.compile(
     r"(에\s*대하여|에\s*대해|에\s*대한|대하여|대해|"
-    r"설명해\s*주세요|설명해주세요|설명해줘|알려줘|해줘요?|주세요)$"
+    r"설명해\s*주세요|설명해주세요|설명해줘|"
+    r"요약해\s*주세요|요약해주세요|요약해줘|"
+    r"정리해\s*주세요|정리해주세요|정리해줘|"
+    r"알려\s*주세요|알려주세요|알려줘|"
+    r"가르쳐\s*주세요|가르쳐줘|"
+    r"해줘요?|주세요)$"
 )
 
 def _preseg_stop_phrases(q: str) -> str:
@@ -2283,6 +2288,10 @@ async def query(payload: dict = Body(...)):
         if m_pid:
             page_id = m_pid.group(1)
     page_id = str(page_id) if page_id is not None else None
+
+    # [FIX] 불용구(설명해줘, 알려줘 등) 제거 → FAISS 벡터 검색 오염 방지
+    # "OCPP 스펙 설명해줘" → "OCPP 스펙" (설명이 AskAgent 매칭되는 문제 해결)
+    q = _preseg_stop_phrases(q).strip()
 
     confl_hint = _has_confl_hint(q)
 

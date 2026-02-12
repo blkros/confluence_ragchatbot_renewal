@@ -1226,9 +1226,13 @@ async def _llm_direct_answer(limited_msgs: list[dict], req: "ChatReq") -> str:
             f"현재 날짜와 시간: {now_kst}. "
             "문서 인덱스가 없어도 일반 상식·수학·날짜/시간 등은 직접 답하세요. "
             "모든 답변은 반드시 한국어로만 작성해야 합니다. "
-            "‘인덱스에 근거 없음’ 같은 말은 하지 마세요."
+            "'인덱스에 근거 없음' 같은 말은 하지 마세요. "
+            "질문 내용에만 답변하고, 질문과 무관한 회사·제품·서비스 이름을 절대 언급하지 마세요."
         )
     }
+    # [DEBUG] NO_RAG 경로 디버그: LLM에 전달되는 메시지 확인
+    if ROUTER_DEBUG:
+        _dbg(f"llm_direct: msgs_count={len(limited_msgs)} msgs={[{m.get('role'): (m.get('content') or '')[:80]} for m in limited_msgs]}")
     max_tokens = _clamp_max_tokens(sysmsg["content"], limited_msgs, req.max_tokens)
     payload = {
         "model": OPENAI_MODEL,
@@ -1779,6 +1783,8 @@ async def _limited_messages(messages) -> list[dict]:
             if m.get("role") == "user":
                 last_user = m
                 break
+        if ROUTER_DEBUG:
+            _dbg(f"limited_messages: KEEP_HISTORY=0, input={len(others)} msgs → keeping only last user")
         others = [last_user] if last_user else []
     budget = max(0, ROUTER_USER_MAX_CHARS)
     total = 0
