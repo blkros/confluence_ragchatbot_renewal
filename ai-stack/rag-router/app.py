@@ -1621,7 +1621,13 @@ def _has_local_items(items: list[dict]) -> bool:
     return False
 
 
-async def _precheck_rag_local(user_msgs: list[str]) -> bool:
+async def _precheck_rag_local(user_msgs: list[str]) -> tuple[bool, list[dict], int]:
+    """
+    Returns (found, items, max_occ):
+      found: 로컬 아이템 존재 여부
+      items: 검색된 아이템 목록
+      max_occ: 핵심 토큰의 최대 출현 횟수 (밀도)
+    """
     timeout = httpx.Timeout(
         connect=ROUTER_PRECHECK_CONNECT_TIMEOUT,
         read=ROUTER_PRECHECK_TIMEOUT,
@@ -1668,21 +1674,17 @@ async def _precheck_rag_local(user_msgs: list[str]) -> bool:
             if ROUTER_DEBUG:
                 _dbg(f"precheck_rag: q='{msg[:60]}' hits={data.get('hits')} items={len(items)} local={local_ok}")
             if local_ok:
-                # [FIX] 핵심 토큰이 컨텍스트에 충분히 등장하는지 밀도 체크
-                # 업무일지에 "피타고라스"가 1번만 언급 → 단순 언급 → precheck 스킵
-                # OCPP 문서에 "OCPP"가 10번 등장 → 실제 관련 문서 → precheck 통과
+                # 핵심 토큰 밀도 계산
                 core = [t for t in _tokens(msg) if t not in _STOPWORDS and len(t) >= 2]
+                max_occ = 0
                 if core:
                     texts = extract_texts(items)
                     blob = " ".join(texts).lower()
                     max_occ = max((blob.count(t.lower()) for t in core), default=0)
-                    min_occ = 1 if len(blob) < 200 else 3
-                    if max_occ < min_occ:
-                        if ROUTER_DEBUG:
-                            _dbg(f"precheck_rag_skip_density: core={core} max_occ={max_occ} min={min_occ} blob_len={len(blob)}")
-                        continue
-                return True
-    return False
+                if ROUTER_DEBUG:
+                    _dbg(f"precheck_rag_density: core={core} max_occ={max_occ}")
+                return (True, items, max_occ)
+    return (False, [], 0)
 
 app = FastAPI()
 
@@ -2288,6 +2290,25 @@ async def chat(req: ChatReq):
     if file_hint_src:
         _dbg(f"file_hint_src: src='{file_hint_src}'")
 
+    # [ADD] Precheck 의도 확인 응답 처리 (1=일반 지식, 2=사내 문서)
+    # precheck에서 NO_RAG인데 RAG 결과가 있을 때 사용자에게 선택 요청한 후의 응답 처리
+    _precheck_force_state = ""  # "NO_RAG" or "RAG_PREFERRED" or ""
+    if prev_assistant_msg and "사내 문서에서 검색하여 답변" in prev_assistant_msg:
+        is_pc_choice, pc_num = _is_number_choice(clean_user_msg)
+        if is_pc_choice and pc_num in (1, 2):
+            ctx_sticky = _get_context_sticky(chat_id)
+            pending_q = ctx_sticky.get("topic", prev_user_msg) if ctx_sticky else prev_user_msg
+            clean_user_msg = pending_q or clean_user_msg
+            _clear_context_sticky(chat_id)
+            variants = generate_query_variants(clean_user_msg)
+            limited_msgs = _replace_last_user(limited_msgs, clean_user_msg)
+            if pc_num == 1:
+                _precheck_force_state = "NO_RAG"
+                _dbg(f"precheck_choice_general: forcing NO_RAG for '{clean_user_msg[:50]}'")
+            else:
+                _precheck_force_state = "RAG_PREFERRED"
+                _dbg(f"precheck_choice_rag: forcing RAG_PREFERRED for '{clean_user_msg[:50]}'")
+
     # [ADD] 후속 질문 Clarification 응답 처리 (1=문서, 2=일반)
     # 이전 메시지가 후속 질문 clarification이고 사용자가 1 또는 2를 입력한 경우
     followup_choice_handled = False  # [FIX] 후속 질문 선택 처리 완료 플래그
@@ -2596,7 +2617,12 @@ async def chat(req: ChatReq):
             if has_person or has_work_keyword:
                 internal_doc_query = True
                 _dbg(f"internal_doc_detected: has_person={has_person} has_work={has_work_keyword}")
-        if ROUTER_TRI_STATE:
+        # [ADD] precheck 사용자 선택이 있으면 라우팅 스킵
+        if _precheck_force_state:
+            state = _precheck_force_state
+            reason = "precheck_user_choice"
+            _dbg(f"precheck_force: state={state} reason={reason}")
+        elif ROUTER_TRI_STATE:
             state, reason = _route_state(orig_user_msg, file_hint, spaces_hint, rag_followup, topic_shift)
             # LLM router override (skip only for hard RAG triggers)
             # [FIX] spaces_hint 제거: 기본 스페이스가 LLM 라우팅을 차단하는 버그 수정
@@ -2639,8 +2665,37 @@ async def chat(req: ChatReq):
                 if variants:
                     precheck_msgs.extend(variants)
                 precheck_msgs = list(dict.fromkeys(precheck_msgs))
-                if await _precheck_rag_local(precheck_msgs):
-                    state, reason = "RAG_PREFERRED", "precheck_rag"
+                pc_found, pc_items, pc_density = await _precheck_rag_local(precheck_msgs)
+                if pc_found:
+                    if pc_density >= 3:
+                        # 핵심 토큰 3회+ 등장 → 확실히 관련 문서 → RAG로 업그레이드
+                        state, reason = "RAG_PREFERRED", "precheck_rag"
+                        _dbg(f"precheck_rag_upgrade: density={pc_density} → RAG_PREFERRED")
+                    elif pc_density >= 1:
+                        # 핵심 토큰 1-2회 등장 → 애매함 → 사용자에게 선택 요청
+                        _dbg(f"precheck_rag_ambiguous: density={pc_density} → asking user")
+                        clrf_content = (
+                            f"이 질문에 대해 어떻게 답변할까요?\n\n"
+                            f"1. 일반 지식으로 답변\n"
+                            f"2. 사내 문서에서 검색하여 답변\n\n"
+                            f"번호를 입력해주세요."
+                        )
+                        # 원본 쿼리를 context sticky에 저장 (사용자 선택 후 복원용)
+                        if chat_id:
+                            _save_context_sticky(chat_id, "precheck://pending", clean_user_msg)
+                        return _attach_trace({
+                            "id": f"cmpl-{uuid.uuid4()}",
+                            "object": "chat.completion",
+                            "created": int(time.time()),
+                            "model": req.model,
+                            "choices": [{
+                                "index": 0,
+                                "message": {"role": "assistant", "content": clrf_content},
+                                "finish_reason": "stop"
+                            }],
+                        }, trace_id)
+                    else:
+                        _dbg(f"precheck_rag_skip: density={pc_density} → stay NO_RAG")
             _dbg(f"route_state: trace_id={trace_id} state={state} reason={reason}")
         if ROUTER_TRI_STATE_ENFORCE and state == "NO_RAG" and not (file_hint or spaces_hint):
             content = await _llm_direct_answer(limited_msgs, req)
