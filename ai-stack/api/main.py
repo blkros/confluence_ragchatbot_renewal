@@ -2976,6 +2976,18 @@ async def query(payload: dict = Body(...)):
     anchor_miss = bool(anchors) and not anchor_hit
     acronym_miss = bool(acr) and not acronym_hit
 
+    # [FIX] 소스 불일치 검사: 쿼리 약어가 결과 소스 파일명에 없으면 MCP 폴백 트리거
+    # "OCPP 스펙" → AskAgent.pptx 매칭 시, "OCPP" ∉ "askagent" → source_mismatch=True
+    source_mismatch = False
+    if acr and items:
+        source_names = " ".join(
+            str((it.get("metadata") or {}).get("source", "")).lower()
+            for it in items
+        )
+        source_mismatch = not any(a.lower() in source_names for a in acr)
+        if source_mismatch:
+            log.info("source_mismatch: acronyms=%s not in sources=%s", acr, source_names[:200])
+
     local_ok = _has_local_hits(items) or _has_local_hits(pool_hits)
     # score/coverage 기반 부족 판정(옵션)
     top1 = top2 = 0.0
@@ -2994,14 +3006,15 @@ async def query(payload: dict = Body(...)):
     cover_low = RAG_SCORE_GATES and (core_cover < RAG_CORE_COVER_MIN)
 
     if local_ok:
-        NEED_FALLBACK = (len(items) == 0) or missing_article or anchor_miss or acronym_miss
+        NEED_FALLBACK = (len(items) == 0) or missing_article or anchor_miss or acronym_miss or source_mismatch
     else:
         NEED_FALLBACK = (
             (len(items) == 0) or
             (len(pool_hits) < max(10, k*2)) or
             missing_article or
             acronym_miss or
-            anchor_miss
+            anchor_miss or
+            source_mismatch
         )
     if score_low or gap_low or cover_low:
         NEED_FALLBACK = True
@@ -3018,10 +3031,11 @@ async def query(payload: dict = Body(...)):
     if missing_article: reasons.append("missing_article")
     if (acr and not acronym_hit): reasons.append("acronym_miss")
     if (anchors and not anchor_hit): reasons.append("anchor_miss")
+    if source_mismatch: reasons.append("source_mismatch")
     if score_low: reasons.append("low_score")
     if gap_low: reasons.append("low_gap")
     if cover_low: reasons.append("low_coverage")
-    log.info("fallback_check reasons=%s local_hits=%s", reasons, local_ok)
+    log.info("fallback_check reasons=%s local_hits=%s source_mismatch=%s", reasons, local_ok, source_mismatch)
 
     pid_miss = False
     if forced_page_id:
@@ -3044,7 +3058,7 @@ async def query(payload: dict = Body(...)):
                 "allowed" if NEED_FALLBACK else "skipped", local_ok,
                 _should_use_mcp(q, client_spaces, space, reasons, local_ok))
 
-    allow_reasons = ("no_items", "small_pool", "missing_article", "pid_miss")
+    allow_reasons = ("no_items", "small_pool", "missing_article", "pid_miss", "source_mismatch")
     allow_fallback = (
         any(r in reasons for r in allow_reasons) or
         ("anchor_miss" in reasons and not local_ok) or
@@ -3150,6 +3164,10 @@ async def query(payload: dict = Body(...)):
                             pass
             except Exception:
                 pass
+        elif source_mismatch:
+            # [FIX] MCP 폴백 빈 결과 + source_mismatch → 기존 AskAgent 결과 사용 방지
+            log.info("source_mismatch + empty MCP: clearing local items for q=%r", q)
+            items, contexts = [], []
 
     # 장/조 질의면 필터 스킵
     if items and not (chapter_no or article_no) and not explicit_src_filter:

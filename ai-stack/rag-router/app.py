@@ -2597,6 +2597,12 @@ async def chat(req: ChatReq):
                 state = "RAG_REQUIRED"
                 reason = "internal_doc"
                 _dbg(f"internal_doc_override: forcing RAG_REQUIRED")
+            # [FIX] 약어 전용 쿼리는 RAG_PREFERRED 강제 (EMS, OCPP 등 → Confluence 검색 필요)
+            # 순수 대문자 2~10자로만 이루어진 쿼리 → 사내 문서 약어일 가능성 높음
+            if state == "NO_RAG" and re.match(r"^[A-Z]{2,10}$", (clean_user_msg or "").strip()):
+                state = "RAG_PREFERRED"
+                reason = "acronym_only"
+                _dbg(f"acronym_override: forcing RAG_PREFERRED for '{clean_user_msg}'")
             if (
                 ROUTER_PRECHECK_RAG
                 and state == "NO_RAG"
