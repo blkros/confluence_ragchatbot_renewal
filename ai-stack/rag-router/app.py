@@ -1533,7 +1533,9 @@ def _route_state(
     rag_followup: bool,
     topic_shift: bool,
 ) -> tuple[str, str]:
-    if file_hint or spaces_hint or _CONF_HOST_RE.search(user_msg or "") or _CONF_HINT_RE.search(user_msg or ""):
+    # [FIX] spaces_hint 제거: 기본 Confluence 스페이스가 모든 쿼리를 RAG_REQUIRED로 강제하는 버그 수정
+    # spaces_hint는 검색 필터링용으로만 사용, 라우팅 결정에는 사용하지 않음
+    if file_hint or _CONF_HOST_RE.search(user_msg or "") or _CONF_HINT_RE.search(user_msg or ""):
         return "RAG_REQUIRED", "file_or_space_or_confluence"
     if _PAGEID_HINT_RE.search(user_msg or ""):
         return "RAG_REQUIRED", "pageid"
@@ -2576,9 +2578,9 @@ async def chat(req: ChatReq):
         if ROUTER_TRI_STATE:
             state, reason = _route_state(orig_user_msg, file_hint, spaces_hint, rag_followup, topic_shift)
             # LLM router override (skip only for hard RAG triggers)
+            # [FIX] spaces_hint 제거: 기본 스페이스가 LLM 라우팅을 차단하는 버그 수정
             hard_required = bool(
                 file_hint
-                or spaces_hint
                 or _CONF_HOST_RE.search(orig_user_msg or "")
                 or _CONF_HINT_RE.search(orig_user_msg or "")
                 or _PAGEID_HINT_RE.search(orig_user_msg or "")
