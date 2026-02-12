@@ -1760,6 +1760,8 @@ def _msg_to_dict(m) -> dict:
         return {"role": d.get("role", "user"), "content": d.get("content", "")}
     return {"role": getattr(m, "role", "user"), "content": getattr(m, "content", str(m))}
 
+ROUTER_KEEP_HISTORY = int(os.getenv("ROUTER_KEEP_HISTORY", "0"))
+
 async def _limited_messages(messages) -> list[dict]:
     msgs = [_msg_to_dict(m) for m in (messages or []) if _msg_to_dict(m).get("content") is not None]
     if not msgs:
@@ -1768,6 +1770,10 @@ async def _limited_messages(messages) -> list[dict]:
     others = [m for m in msgs if m.get("role") != "system"]
     if not others:
         return system[:1] if system else []
+    # ROUTER_KEEP_HISTORY=0: 이전 assistant 메시지 제거 (RAG 컨텍스트 오염 방지)
+    # 현재 user 메시지만 유지하여 이전 턴의 RAG 답변이 새 답변에 영향주지 않게 함
+    if not ROUTER_KEEP_HISTORY:
+        others = [m for m in others if m.get("role") == "user"]
     budget = max(0, ROUTER_USER_MAX_CHARS)
     total = 0
     keep = []
