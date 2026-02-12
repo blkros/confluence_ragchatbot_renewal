@@ -1453,6 +1453,36 @@ def is_relevant(q: str, ctx: str) -> bool:
 def _is_webui_task(s: str) -> bool:
     return bool(re.match(r"(?is)^\s*#{3}\s*task\s*:", (s or "")))
 
+# [ADD] 일반 지식 질문 패턴 감지 → clarification 스킵 대상
+_GENERAL_KNOWLEDGE_RE = re.compile(
+    r'(?:'
+    r'(?:이|가|은|는)\s*(?:뭐|무엇|무슨)|'  # "X가 뭐야", "X는 무엇"
+    r'뭐야\s*\??$|'                           # "~뭐야?"
+    r'무엇인가요|무엇입니까|'                   # "~무엇인가요?"
+    r'(?:어떤|무슨)\s*(?:것|거)인가요|'        # "어떤 것인가요?"
+    r'(?:알려|설명)\s*(?:줘|주세요|해\s*줘)|'  # "알려줘", "설명해줘" (단독)
+    r'(?:정의|개념|원리|의미)(?:가|를|은)?\s*(?:뭐|무엇)|'  # "정의가 뭐야"
+    r'(?:what|how|why)\s+(?:is|are|does|do)\b'  # English patterns
+    r')',
+    re.IGNORECASE
+)
+
+def _is_general_knowledge_query(q: str) -> bool:
+    """일반 상식/지식 질문인지 판단 (clarification 스킵 대상)"""
+    if not q:
+        return False
+    # 내부 문서 냄새가 나면 일반 지식이 아님
+    q_spaced = re.sub(r'([A-Za-z0-9])([가-힣])', r'\1 \2', q)
+    q_spaced = re.sub(r'([가-힣])([A-Za-z0-9])', r'\1 \2', q_spaced)
+    # 대문자 약어 2글자 이상이면 내부 문서 가능성
+    if re.search(r'\b[A-Z]{2,}\b', q_spaced):
+        # 단, "ANN", "CNN" 등 일반적인 기술 약어는 일반 지식으로 처리
+        acronyms = re.findall(r'\b[A-Z]{2,}\b', q_spaced)
+        _common_tech = {"AI", "ML", "DL", "ANN", "CNN", "RNN", "GAN", "NLP", "API", "HTTP", "SQL", "CSS", "HTML", "GPU", "CPU", "RAM", "SSD", "USB", "LLM", "RAG"}
+        if not all(a in _common_tech for a in acronyms):
+            return False  # 사내 약어 가능성 → clarification 허용
+    return bool(_GENERAL_KNOWLEDGE_RE.search(q))
+
 def _last_assistant_text(messages: list[dict]) -> str:
     for m in reversed(messages or []):
         if (m.get("role") or "") == "assistant":
@@ -2408,7 +2438,10 @@ async def chat(req: ChatReq):
     # clarification_choice가 없고, 메타태스크가 아니고, 명시적 파일 첨부가 아니면 clarification 체크
     # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵 (has_explicit_upload는 상단에서 정의됨)
     # ⚠️ followup_choice_handled 체크: 이미 후속 질문 선택(1/2)이 처리된 경우 스킵
-    if not clarification_choice_src and not _is_webui_task(orig_user_msg) and not has_explicit_upload and not followup_choice_handled:
+    # [FIX] 일반 지식 질문이면 clarification 스킵 → NO_RAG 라우팅으로 직행
+    if _is_general_knowledge_query(clean_user_msg):
+        _dbg(f"clarification_skip_general: q='{clean_user_msg[:50]}'")
+    elif not clarification_choice_src and not _is_webui_task(orig_user_msg) and not has_explicit_upload and not followup_choice_handled:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
@@ -2607,7 +2640,8 @@ async def chat(req: ChatReq):
 
         # [ADD] === Clarification 체크 (QA 전에 먼저 실행) ===
         # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵 (has_explicit_upload는 상단에서 정의됨)
-        if not clarification_choice_src and not has_explicit_upload:
+        # [FIX] 일반 지식 질문이면 clarification 스킵
+        if not clarification_choice_src and not has_explicit_upload and not _is_general_knowledge_query(clean_user_msg):
             try:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
                 if spaces_hint:
@@ -2838,7 +2872,15 @@ async def chat(req: ChatReq):
                 content += "\n\n출처:\n" + "\n".join(f"- {u}" for u in urls)
 
         if ROUTER_SHOW_CONTEXT_LABEL:
-            ctx_label = _label_for_context(ctx_items or qa_items, qa_urls, query=clean_user_msg, ctx_text=full_ctx_for_check)
+            # [FIX] clarification 선택 시 relevance_ratio 우회 → 사용자가 명시적으로 선택한 문서 라벨 강제
+            if clarification_choice_src and ctx_for_prompt:
+                if not _LOCAL_SRC_RE.search(clarification_choice_src):
+                    ctx_label = "Confluence(RAG)"
+                else:
+                    ctx_label = "로컬 문서(RAG)"
+                _dbg(f"clarification_force_label_qa: {ctx_label}")
+            else:
+                ctx_label = _label_for_context(ctx_items or qa_items, qa_urls, query=clean_user_msg, ctx_text=full_ctx_for_check)
             content = f"근거: {ctx_label}\n{content}"
 
             # [ADD] RAG 응답 성공시 context_sticky 저장 (후속 질문 컨텍스트 유지)
@@ -3338,7 +3380,15 @@ async def chat(req: ChatReq):
             content += "\n\n출처:\n" + "\n".join(f"- {u}" for u in urls)
 
     if ROUTER_SHOW_CONTEXT_LABEL:
-        ctx_label = _label_for_context(ctx_items or qa_items, src_urls, query=clean_user_msg, ctx_text=full_ctx_for_check)
+        # [FIX] clarification 선택 시 relevance_ratio 우회 → 사용자가 명시적으로 선택한 문서 라벨 강제
+        if clarification_choice_src and ctx_for_prompt:
+            if not _LOCAL_SRC_RE.search(clarification_choice_src):
+                ctx_label = "Confluence(RAG)"
+            else:
+                ctx_label = "로컬 문서(RAG)"
+            _dbg(f"clarification_force_label: {ctx_label}")
+        else:
+            ctx_label = _label_for_context(ctx_items or qa_items, src_urls, query=clean_user_msg, ctx_text=full_ctx_for_check)
         content = f"근거: {ctx_label}\n{content}"
 
         # [ADD] RAG 응답 성공시 context_sticky 저장 (후속 질문 컨텍스트 유지)

@@ -2116,6 +2116,7 @@ def _detect_ambiguity(q: str, items: list, contexts: list) -> bool:
     1. top-1 score가 낮음 (< 0.6)
     2. 여러 source에서 결과가 나옴 (다양성 높음)
     3. 질의에 모호한 키워드 포함 ("요약", "내용", "정리" 등)
+    4. [FIX] 최소 관련성 조건: query 토큰과 겹치는 결과가 하나도 없으면 ambiguity 아님
     """
     if not items:
         return False
@@ -2140,6 +2141,22 @@ def _detect_ambiguity(q: str, items: list, contexts: list) -> bool:
     # 4) Acronym check (OCPP, API 같은 약어가 있으면 특정 문서를 찾는 것)
     has_acronym = bool(re.search(r'\b[A-Z]{2,10}\b', q))
 
+    # [FIX] 5) 최소 관련성 조건: query 토큰과 제목/본문 겹침이 있는 결과가 최소 1개는 있어야 함
+    # 겹침이 전혀 없으면 clarification을 띄워도 의미 없는 후보만 보여줌
+    q_tokens = _tokenize_query(q)
+    if q_tokens:
+        has_relevant = False
+        for it in items:
+            md = it.get("metadata") or {}
+            title = md.get("title") or ""
+            text = it.get("text") or ""
+            if _keyword_overlap_score(q_tokens, text, title) > 0:
+                has_relevant = True
+                break
+        if not has_relevant:
+            log.debug("ambiguity_skip: no items overlap with query tokens q=%r", q[:50])
+            return False
+
     # 모호함 판정:
     # - (약어 + 모호한 키워드) 조합이면 clarification 필요
     # - 또는 (낮은 score + 여러 source + 모호한 키워드)
@@ -2148,14 +2165,18 @@ def _detect_ambiguity(q: str, items: list, contexts: list) -> bool:
     return is_ambiguous
 
 
-def _extract_candidates(items: list, contexts: list, pool_hits: list = None, max_candidates: int = 5) -> list:
+def _extract_candidates(items: list, contexts: list, pool_hits: list = None,
+                        max_candidates: int = 5, query: str = "") -> list:
     """
     items/contexts/pool_hits에서 후보 문서들을 추출하여 사용자에게 선택지로 제공.
     source별로 그룹핑하고 title + preview를 포함.
 
     pool_hits를 포함함으로써 FAISS에서 찾은 원본 결과(PDF 등)도 후보에 포함됨.
+
+    [FIX] query 파라미터 추가: 후보의 제목/본문이 query와 키워드 겹침이 없으면 제외.
     """
     source_map = {}  # source -> {title, score, type, preview}
+    q_tokens = _tokenize_query(query) if query else []
 
     # 1) items에서 후보 추출 (MCP 결과 등)
     for it in items:
@@ -2184,7 +2205,8 @@ def _extract_candidates(items: list, contexts: list, pool_hits: list = None, max
                 "source": src,
                 "score": score,
                 "type": doc_type,
-                "preview": text[:150] + ("..." if len(text) > 150 else "")
+                "preview": text[:150] + ("..." if len(text) > 150 else ""),
+                "_text": text,  # 관련성 필터용 (최종 결과에서 제거)
             }
 
     # 2) pool_hits에서도 후보 추출 (FAISS 원본 결과)
@@ -2213,8 +2235,27 @@ def _extract_candidates(items: list, contexts: list, pool_hits: list = None, max
                 "source": src,
                 "score": score,
                 "type": doc_type,
-                "preview": text[:150] + ("..." if len(text) > 150 else "")
+                "preview": text[:150] + ("..." if len(text) > 150 else ""),
+                "_text": text,
             }
+
+    # [FIX] 관련성 필터: query 토큰과 제목/본문 키워드 겹침이 없는 후보 제외
+    if q_tokens:
+        filtered = {}
+        for src, cand in source_map.items():
+            overlap = _keyword_overlap_score(q_tokens, cand.get("_text", ""), cand.get("title", ""))
+            if overlap > 0:
+                cand["_relevance"] = overlap
+                filtered[src] = cand
+            else:
+                log.debug("clarification candidate filtered (no overlap): title=%r, src=%r",
+                          cand.get("title", ""), src[:80])
+        source_map = filtered
+
+    # _text 임시 필드 제거
+    for cand in source_map.values():
+        cand.pop("_text", None)
+        cand.pop("_relevance", None)
 
     # Sort by score and limit
     candidates = sorted(source_map.values(), key=lambda x: x["score"], reverse=True)[:max_candidates]
@@ -3203,7 +3244,7 @@ async def query(payload: dict = Body(...)):
     # [ADD] Query Clarification: 모호한 질의에 대해 후보 문서 선택 요청
     # clarification_choice가 없고(첫 요청), 결과가 모호하면 clarification 응답 반환
     if not clarification_choice and _detect_ambiguity(q, items, contexts):
-        candidates = _extract_candidates(items, contexts, pool_hits=pool_hits, max_candidates=5)
+        candidates = _extract_candidates(items, contexts, pool_hits=pool_hits, max_candidates=5, query=q)
         if candidates:
             log.info("Query ambiguous, returning clarification candidates: q=%r, count=%d", q, len(candidates))
             return {
