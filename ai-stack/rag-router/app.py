@@ -1668,6 +1668,19 @@ async def _precheck_rag_local(user_msgs: list[str]) -> bool:
             if ROUTER_DEBUG:
                 _dbg(f"precheck_rag: q='{msg[:60]}' hits={data.get('hits')} items={len(items)} local={local_ok}")
             if local_ok:
+                # [FIX] 핵심 토큰이 컨텍스트에 충분히 등장하는지 밀도 체크
+                # 업무일지에 "피타고라스"가 1번만 언급 → 단순 언급 → precheck 스킵
+                # OCPP 문서에 "OCPP"가 10번 등장 → 실제 관련 문서 → precheck 통과
+                core = [t for t in _tokens(msg) if t not in _STOPWORDS and len(t) >= 2]
+                if core:
+                    texts = extract_texts(items)
+                    blob = " ".join(texts).lower()
+                    max_occ = max((blob.count(t.lower()) for t in core), default=0)
+                    min_occ = 1 if len(blob) < 200 else 3
+                    if max_occ < min_occ:
+                        if ROUTER_DEBUG:
+                            _dbg(f"precheck_rag_skip_density: core={core} max_occ={max_occ} min={min_occ} blob_len={len(blob)}")
+                        continue
                 return True
     return False
 
