@@ -3067,11 +3067,18 @@ async def query(payload: dict = Body(...)):
     explicit_src_filter = bool(src_filter) and not forced_page_id
     # [FIX] Confluence URL이면 MCP 폴백 허용 (clarification 선택 후 페이지 fetch 필요)
     is_confluence_src = bool(src_filter) and ("confluence" in str(src_filter).lower() or "/display/" in str(src_filter) or "/pages/" in str(src_filter))
-    if explicit_src_filter and allow_fallback and not is_confluence_src:
+    # [FIX] source_mismatch일 때는 src_filter가 잘못된 소스를 가리키므로 MCP 폴백 허용
+    # 예: OCPP 질문인데 src_filter=AskAgent.pptx → MCP로 Confluence에서 OCPP 검색
+    if explicit_src_filter and allow_fallback and not is_confluence_src and not source_mismatch:
         allow_fallback = False
         if NEED_FALLBACK:
             NEED_FALLBACK = False
             log.info("MCP fallback skipped due to explicit src_filter=%r", src_filter)
+    elif explicit_src_filter and source_mismatch:
+        # src_filter가 잘못된 소스 → src_filter 무시하고 MCP 폴백
+        log.info("source_mismatch overrides src_filter=%r: allowing MCP fallback for q=%r", src_filter, q)
+        src_filter = None
+        explicit_src_filter = False
     
     if NEED_FALLBACK and not _should_use_mcp(q, allowed_spaces, space, reasons, local_ok):
         NEED_FALLBACK = False

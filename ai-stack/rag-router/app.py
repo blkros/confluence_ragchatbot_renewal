@@ -2041,6 +2041,12 @@ def _prefer_single_source(items: list[dict], query: str = "") -> tuple[list[dict
     # If any source matches the query, prefer the best match.
     if scores and max(scores.values()) > 0:
         primary = max(scores, key=lambda s: (scores[s], counts.get(s, 0)))
+    elif query:
+        # [FIX] 쿼리가 주어졌지만 어떤 소스 파일명도 매칭되지 않음
+        # → 빈도 기반으로 무관한 소스를 선택하면 source focus가 잘못된 소스로 고정됨
+        # 예: "OCPP 스펙" 질문에 AskAgent.pptx가 가장 많다고 선택 → 잘못된 답변
+        # → 특정 소스를 선호하지 않고 전체 아이템 반환
+        return items, ""
     else:
         local = [s for s in counts if _LOCAL_SRC_RE.search(s)]
         primary = max(local, key=lambda s: counts[s]) if local else max(counts, key=counts.get)
