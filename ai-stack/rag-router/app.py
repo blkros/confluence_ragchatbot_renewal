@@ -1453,36 +1453,6 @@ def is_relevant(q: str, ctx: str) -> bool:
 def _is_webui_task(s: str) -> bool:
     return bool(re.match(r"(?is)^\s*#{3}\s*task\s*:", (s or "")))
 
-# [ADD] 일반 지식 질문 패턴 감지 → clarification 스킵 대상
-_GENERAL_KNOWLEDGE_RE = re.compile(
-    r'(?:'
-    r'(?:이|가|은|는)\s*(?:뭐|무엇|무슨)|'  # "X가 뭐야", "X는 무엇"
-    r'뭐야\s*\??$|'                           # "~뭐야?"
-    r'무엇인가요|무엇입니까|'                   # "~무엇인가요?"
-    r'(?:어떤|무슨)\s*(?:것|거)인가요|'        # "어떤 것인가요?"
-    r'(?:알려|설명)\s*(?:줘|주세요|해\s*줘)|'  # "알려줘", "설명해줘" (단독)
-    r'(?:정의|개념|원리|의미)(?:가|를|은)?\s*(?:뭐|무엇)|'  # "정의가 뭐야"
-    r'(?:what|how|why)\s+(?:is|are|does|do)\b'  # English patterns
-    r')',
-    re.IGNORECASE
-)
-
-def _is_general_knowledge_query(q: str) -> bool:
-    """일반 상식/지식 질문인지 판단 (clarification 스킵 대상)"""
-    if not q:
-        return False
-    # 내부 문서 냄새가 나면 일반 지식이 아님
-    q_spaced = re.sub(r'([A-Za-z0-9])([가-힣])', r'\1 \2', q)
-    q_spaced = re.sub(r'([가-힣])([A-Za-z0-9])', r'\1 \2', q_spaced)
-    # 대문자 약어 2글자 이상이면 내부 문서 가능성
-    if re.search(r'\b[A-Z]{2,}\b', q_spaced):
-        # 단, "ANN", "CNN" 등 일반적인 기술 약어는 일반 지식으로 처리
-        acronyms = re.findall(r'\b[A-Z]{2,}\b', q_spaced)
-        _common_tech = {"AI", "ML", "DL", "ANN", "CNN", "RNN", "GAN", "NLP", "API", "HTTP", "SQL", "CSS", "HTML", "GPU", "CPU", "RAM", "SSD", "USB", "LLM", "RAG"}
-        if not all(a in _common_tech for a in acronyms):
-            return False  # 사내 약어 가능성 → clarification 허용
-    return bool(_GENERAL_KNOWLEDGE_RE.search(q))
-
 def _last_assistant_text(messages: list[dict]) -> str:
     for m in reversed(messages or []):
         if (m.get("role") or "") == "assistant":
@@ -1747,7 +1717,8 @@ def build_final_only_prompt(ctx_text: str) -> str:
     return (
         "You must answer only with the final answer. Do not include <think> or reasoning.\n"
         "Answer strictly in Korean.\n"
-        "If you cannot answer from the context, reply exactly: 인덱스에 근거 없음\n"
+        "If the context is relevant to the question, use it. "
+        "If the context is clearly unrelated to the question, ignore it and answer from your general knowledge.\n"
         "[컨텍스트 시작]\n"
         f"{ctx_text}\n"
         "[컨텍스트 끝]\n"
@@ -1982,7 +1953,8 @@ def build_system_with_context(ctx_text: str, mode: str, force_summary: bool = Fa
         "역할: 주어진 컨텍스트를 근거로 **정확하고 실무 친화적인** 한국어 답변을 작성한다.\n"
         "원칙:\n"
         "- 반드시 한국어로만 작성한다.\n"
-        "- 컨텍스트에 있는 정보만 사용하고 추측 금지.\n"
+        "- 컨텍스트가 질문과 관련이 있으면 그 정보를 근거로 답변한다.\n"
+        "- 컨텍스트가 질문과 명백히 무관하면 무시하고, 너의 일반 지식으로 답변한다.\n"
         "- 고유명사/수치는 가능한 그대로 인용하되 과도한 반복은 피한다.\n"
         "- 내부 추론(<think> 등) 출력 금지, 최종 답만 출력한다.\n"
         "- <think> 태그를 사용하더라도 답변은 반드시 태그 밖에 출력한다.\n"
@@ -2438,10 +2410,7 @@ async def chat(req: ChatReq):
     # clarification_choice가 없고, 메타태스크가 아니고, 명시적 파일 첨부가 아니면 clarification 체크
     # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵 (has_explicit_upload는 상단에서 정의됨)
     # ⚠️ followup_choice_handled 체크: 이미 후속 질문 선택(1/2)이 처리된 경우 스킵
-    # [FIX] 일반 지식 질문이면 clarification 스킵 → NO_RAG 라우팅으로 직행
-    if _is_general_knowledge_query(clean_user_msg):
-        _dbg(f"clarification_skip_general: q='{clean_user_msg[:50]}'")
-    elif not clarification_choice_src and not _is_webui_task(orig_user_msg) and not has_explicit_upload and not followup_choice_handled:
+    if not clarification_choice_src and not _is_webui_task(orig_user_msg) and not has_explicit_upload and not followup_choice_handled:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as cl:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
@@ -2640,8 +2609,7 @@ async def chat(req: ChatReq):
 
         # [ADD] === Clarification 체크 (QA 전에 먼저 실행) ===
         # "문서"만 있으면 clarification 실행, "첨부"가 있으면 스킵 (has_explicit_upload는 상단에서 정의됨)
-        # [FIX] 일반 지식 질문이면 clarification 스킵
-        if not clarification_choice_src and not has_explicit_upload and not _is_general_knowledge_query(clean_user_msg):
+        if not clarification_choice_src and not has_explicit_upload:
             try:
                 clarify_payload = {"q": clean_user_msg, "k": 5, "sticky": False}
                 if spaces_hint:

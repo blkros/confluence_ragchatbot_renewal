@@ -2141,22 +2141,6 @@ def _detect_ambiguity(q: str, items: list, contexts: list) -> bool:
     # 4) Acronym check (OCPP, API 같은 약어가 있으면 특정 문서를 찾는 것)
     has_acronym = bool(re.search(r'\b[A-Z]{2,10}\b', q))
 
-    # [FIX] 5) 최소 관련성 조건: query 토큰과 제목/본문 겹침이 있는 결과가 최소 1개는 있어야 함
-    # 겹침이 전혀 없으면 clarification을 띄워도 의미 없는 후보만 보여줌
-    q_tokens = _tokenize_query(q)
-    if q_tokens:
-        has_relevant = False
-        for it in items:
-            md = it.get("metadata") or {}
-            title = md.get("title") or ""
-            text = it.get("text") or ""
-            if _keyword_overlap_score(q_tokens, text, title) > 0:
-                has_relevant = True
-                break
-        if not has_relevant:
-            log.debug("ambiguity_skip: no items overlap with query tokens q=%r", q[:50])
-            return False
-
     # 모호함 판정:
     # - (약어 + 모호한 키워드) 조합이면 clarification 필요
     # - 또는 (낮은 score + 여러 source + 모호한 키워드)
