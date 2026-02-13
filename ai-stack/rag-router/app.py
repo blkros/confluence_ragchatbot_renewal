@@ -1670,11 +1670,11 @@ async def _precheck_rag_local(user_msgs: list[str]) -> tuple[bool, list[dict], i
             if not data:
                 continue
             items = data.get("items") or []
-            local_ok = _has_local_items(items)
+            has_items = len(items) > 0
             if ROUTER_DEBUG:
-                _dbg(f"precheck_rag: q='{msg[:60]}' hits={data.get('hits')} items={len(items)} local={local_ok}")
-            if local_ok:
-                # 핵심 토큰 밀도 계산
+                _dbg(f"precheck_rag: q='{msg[:60]}' hits={data.get('hits')} items={len(items)} has_items={has_items}")
+            if has_items:
+                # 핵심 토큰 밀도 계산 (로컬 + Confluence writeback 모두 포함)
                 core = [t for t in _tokens(msg) if t not in _STOPWORDS and len(t) >= 2]
                 max_occ = 0
                 if core:
