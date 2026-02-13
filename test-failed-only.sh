@@ -39,7 +39,7 @@ sleep 2
 
 # -----------------------------------------------------------------------------
 echo ""
-echo "━━━ 3.3 NO_RAG → LLM 직접 응답 ━━━"
+echo "━━━ 3.3 NO_RAG → clarification 또는 LLM 직접 응답 ━━━"
 echo "Testing: 피타고라스 정리가 뭐야?"
 
 resp=$(curl_quiet "$ROUTER_URL/v1/chat/completions" -H "Content-Type: application/json" -d "{
@@ -52,8 +52,28 @@ resp_len=${#resp}
 content_len=${#content}
 info "Response: ${resp_len}B, Content: ${content_len}B"
 
-if [[ -n "$content" && "$content" != "null" && ${#content} -gt 10 ]]; then
-  success "3.3 PASS - LLM response received"
+if echo "$content" | grep -q "일반 지식으로 답변"; then
+  success "3.3 PASS - Precheck clarification triggered"
+  info "Clarification: ${content:0:80}"
+  echo "  → Selecting option 1 (일반 지식)..."
+  resp2=$(curl_quiet "$ROUTER_URL/v1/chat/completions" -H "Content-Type: application/json" -d "{
+    \"model\":\"$MODEL\",
+    \"messages\":[
+      {\"role\":\"user\",\"content\":\"피타고라스 정리가 뭐야?\"},
+      {\"role\":\"assistant\",\"content\":\"$(echo "$content" | sed 's/"/\\"/g')\"},
+      {\"role\":\"user\",\"content\":\"1\"}
+    ]
+  }" --max-time 90)
+  content2=$(echo "$resp2" | safe_jq '.choices[0].message.content')
+  if [[ -n "$content2" && "$content2" != "null" && ${#content2} -gt 10 ]]; then
+    success "3.3 PASS - LLM response after clarification"
+    info "Preview: ${content2:0:80}..."
+  else
+    failure "3.3 FAIL - no response after clarification"
+    info "Raw: ${resp2:0:300}"
+  fi
+elif [[ -n "$content" && "$content" != "null" && ${#content} -gt 10 ]]; then
+  success "3.3 PASS - LLM response received (no clarification)"
   info "Preview: ${content:0:80}..."
 else
   failure "3.3 FAIL - no response"

@@ -515,24 +515,42 @@ fi
 subsection "3.3 NO_RAG → LLM 직접 응답"
 # -----------------------------------------------------------------------------
 
-echo "Testing: 일반 지식 질문 → LLM 직접 응답"
+echo "Testing: 일반 지식 질문 → clarification 또는 LLM 직접 응답"
 resp=$(curl_quiet "$ROUTER_URL/v1/chat/completions" -H "Content-Type: application/json" -d "{
   \"model\":\"$MODEL\",
   \"messages\":[{\"role\":\"user\",\"content\":\"피타고라스 정리가 뭐야?\"}]
 }" --max-time 90)
 
 content=$(echo "$resp" | safe_jq '.choices[0].message.content')
-# 디버그: 응답 상태 확인
 resp_len=${#resp}
 content_len=${#content}
 info "Response length: $resp_len, Content length: $content_len"
 
-if echo "$content" | grep -qi "근거: 없음(LLM)"; then
-  success "NO_RAG route working (LLM direct)"
-elif echo "$content" | grep -qi "근거:"; then
-  # RAG나 다른 경로로 응답했지만 정상 응답
-  success "Response received (routed via RAG)"
-  info "Label: $(echo "$content" | head -1)"
+if echo "$content" | grep -q "일반 지식으로 답변"; then
+  # clarification 발생 → "1" 선택하여 일반 지식 답변 요청
+  success "Precheck clarification triggered (ambiguous query)"
+  info "Clarification: ${content:0:60}..."
+  echo "  → Selecting option 1 (일반 지식)..."
+  resp2=$(curl_quiet "$ROUTER_URL/v1/chat/completions" -H "Content-Type: application/json" -d "{
+    \"model\":\"$MODEL\",
+    \"messages\":[
+      {\"role\":\"user\",\"content\":\"피타고라스 정리가 뭐야?\"},
+      {\"role\":\"assistant\",\"content\":\"$(echo "$content" | sed 's/"/\\"/g')\"},
+      {\"role\":\"user\",\"content\":\"1\"}
+    ]
+  }" --max-time 90)
+  content2=$(echo "$resp2" | safe_jq '.choices[0].message.content')
+  if echo "$content2" | grep -qi "근거: 없음(LLM)"; then
+    success "NO_RAG route working after clarification (LLM direct)"
+  elif [[ -n "$content2" && "$content2" != "null" && ${#content2} -gt 10 ]]; then
+    success "LLM response received after clarification"
+    info "Preview: ${content2:0:60}..."
+  else
+    failure "NO_RAG route failed after clarification"
+    info "Raw response: ${resp2:0:200}"
+  fi
+elif echo "$content" | grep -qi "근거: 없음(LLM)"; then
+  success "NO_RAG route working (LLM direct, no clarification needed)"
 elif [[ -n "$content" && "$content" != "null" && ${#content} -gt 10 ]]; then
   success "LLM response received"
   info "Preview: ${content:0:50}..."
